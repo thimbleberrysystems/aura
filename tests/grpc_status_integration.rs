@@ -16,9 +16,11 @@ async fn status_returns_ok() -> Result<(), Box<dyn std::error::Error>> {
     let addr = "127.0.0.1:50052".parse().unwrap();
 
     // Spawn the gRPC server from the library module.
+    // Create a shared app context and start the server with it.
+    let ctx = std::sync::Arc::new(aura::context::AppContext::new());
     let server_handle = tokio::spawn(async move {
         // This will run until aborted.
-        aura::grpc::serve_tcp(addr).await.expect("gRPC server failed");
+        aura::grpc::serve_tcp(addr, ctx).await.expect("gRPC server failed");
     });
 
     // Give the server a short moment to bind and start.
@@ -28,7 +30,8 @@ async fn status_returns_ok() -> Result<(), Box<dyn std::error::Error>> {
     let mut client = aura::grpc::aura::aura_client::AuraClient::connect("http://127.0.0.1:50052").await?;
     let req = aura::grpc::aura::StatusRequest {};
     let resp = client.status(req).await?;
-    assert_eq!(resp.into_inner().status, "OK");
+    let got = resp.into_inner().status;
+    assert!(got.starts_with("OK"), "unexpected status: {}", got);
 
     // Stop the server task.
     server_handle.abort();

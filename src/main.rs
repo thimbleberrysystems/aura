@@ -51,8 +51,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Start gRPC control server (TCP, localhost:50051) — minimal Status RPC.
     let grpc_addr: std::net::SocketAddr = "127.0.0.1:50051".parse().unwrap();
+    let app_ctx = std::sync::Arc::new(aura::context::AppContext::new());
+    let grpc_ctx = std::sync::Arc::clone(&app_ctx);
     tokio::spawn(async move {
-        if let Err(e) = grpc::serve_tcp(grpc_addr).await {
+        if let Err(e) = grpc::serve_tcp(grpc_addr, grpc_ctx).await {
             error!("gRPC server error: {}", e);
         }
     });
