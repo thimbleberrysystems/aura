@@ -6,3 +6,10 @@ edition = "2021"
 [dependencies]
 portable-pty = "0.9"
 anyhow = "1.0"
+crossterm = "0.28"
+tokio = { version = "1", features = ["full"] }
+tokio-signal = "0.2"
+termwiz = "0.23"
+atty = "0.2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
