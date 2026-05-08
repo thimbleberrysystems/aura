@@ -12,6 +12,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
+mod cfg;
+use crate::cfg::load_config;
 
 /// Detect the current terminal size (columns x rows).
 fn current_pty_size() -> PtySize {
@@ -26,13 +28,18 @@ fn current_pty_size() -> PtySize {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialise structured logging; set RUST_LOG to control verbosity.
+    // Load config — default: logging disabled. If enabled, tracing will honor RUST_LOG.
+    let config = load_config();
+    let env_filter = if config.logging_enabled() {
+        tracing_subscriber::EnvFilter::from_default_env()
+    } else {
+        // set to WARN by default to suppress debug/info from `mini_pty`
+        tracing_subscriber::EnvFilter::new("warn")
+    };
+
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("mini_pty=debug".parse()?),
-        )
-        .with_writer(std::io::stderr) // keep stderr clean from the PTY output on stdout
+        .with_env_filter(env_filter)
+        .with_writer(std::io::stderr)
         .init();
 
     // Warn if stdin is not a real TTY (e.g. piped input).
