@@ -14,6 +14,8 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 mod cfg;
 use crate::cfg::load_config;
+// Use the library-exposed `grpc` module (see `src/lib.rs`).
+use aura::grpc;
 
 /// Detect the current terminal size (columns x rows).
 fn current_pty_size() -> PtySize {
@@ -46,6 +48,14 @@ async fn main() -> anyhow::Result<()> {
     if !atty::is(atty::Stream::Stdin) {
         warn!("stdin is not a TTY — raw mode will not be entered");
     }
+
+    // Start gRPC control server (TCP, localhost:50051) — minimal Status RPC.
+    let grpc_addr: std::net::SocketAddr = "127.0.0.1:50051".parse().unwrap();
+    tokio::spawn(async move {
+        if let Err(e) = grpc::serve_tcp(grpc_addr).await {
+            error!("gRPC server error: {}", e);
+        }
+    });
 
     // ── Open PTY ────────────────────────────────────────────────────────────
     let pty_system = native_pty_system();

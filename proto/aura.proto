@@ -1,0 +1,11 @@
+syntax = "proto3";
+package aura;
+
+service Aura {
+  rpc Status(StatusRequest) returns (StatusReply);
+}
+
+message StatusRequest {}
+message StatusReply {
+  string status = 1;
+}
