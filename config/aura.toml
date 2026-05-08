@@ -1,5 +1,5 @@
-(# Toggle logging for the mini-pty program.
+(# Toggle logging for the aura program.
 # - Set to true to enable logging (honors RUST_LOG).
 # - Default is false to keep PTY output clean.
 logging = false
-)
+

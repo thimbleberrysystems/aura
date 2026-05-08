@@ -33,7 +33,7 @@ async fn main() -> anyhow::Result<()> {
     let env_filter = if config.logging_enabled() {
         tracing_subscriber::EnvFilter::from_default_env()
     } else {
-        // set to WARN by default to suppress debug/info from `mini_pty`
+        // set to WARN by default to suppress debug/info from `aura`
         tracing_subscriber::EnvFilter::new("warn")
     };
 

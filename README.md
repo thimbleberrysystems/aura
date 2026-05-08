@@ -1,4 +1,4 @@
-# mini-pty
+# aura
 
 Minimal PTY example in Rust that spawns `$SHELL` on the slave side and forwards I/O.
 
