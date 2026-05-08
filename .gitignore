@@ -1,0 +1,15 @@
+# Rust/Cargo
+target/
+
+# Editor directories and files
+.vscode/
+.idea/
+*.swp
+*~
+
+# macOS
+.DS_Store
+
+# Logs and temp files
+*.log
+*.tmp
