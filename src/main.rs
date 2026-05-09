@@ -50,14 +50,39 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Start gRPC control server (TCP, localhost:50051) — minimal Status RPC.
-    let grpc_addr: std::net::SocketAddr = "127.0.0.1:50051".parse().unwrap();
     let app_ctx = std::sync::Arc::new(aura::context::AppContext::new());
-    let grpc_ctx = std::sync::Arc::clone(&app_ctx);
-    tokio::spawn(async move {
-        if let Err(e) = grpc::serve_tcp(grpc_addr, grpc_ctx).await {
-            error!("gRPC server error: {}", e);
+
+    // Start MCP based on config file `config/aura.toml` (optional).
+    if let Ok(s) = std::fs::read_to_string("config/aura.toml") {
+        if let Ok(v) = toml::from_str::<toml::Value>(&s) {
+            if let Some(mcp_cfg) = v.get("mcp") {
+                let enabled = mcp_cfg.get("mcp_enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+                if enabled {
+                    let transport = mcp_cfg.get("mcp_transport").and_then(|v| v.as_str()).unwrap_or("uds");
+                    if transport == "uds" {
+                        let path = mcp_cfg.get("mcp_uds").and_then(|v| v.as_str()).unwrap_or("/run/user/1000/aura.sock");
+                        let ctx = std::sync::Arc::clone(&app_ctx);
+                        let path = path.to_string();
+                        tokio::spawn(async move {
+                            if let Err(e) = aura::mcp::serve_uds(&path, ctx).await {
+                                error!("MCP UDS server error: {}", e);
+                            }
+                        });
+                    } else {
+                        let addr_str = mcp_cfg.get("mcp_tcp").and_then(|v| v.as_str()).unwrap_or("127.0.0.1:50051");
+                        if let Ok(addr) = addr_str.parse() {
+                            let ctx = std::sync::Arc::clone(&app_ctx);
+                            tokio::spawn(async move {
+                                if let Err(e) = aura::mcp::serve_tcp(addr, ctx).await {
+                                    error!("MCP TCP server error: {}", e);
+                                }
+                            });
+                        }
+                    }
+                }
+            }
         }
-    });
+    }
 
     // ── Open PTY ────────────────────────────────────────────────────────────
     let pty_system = native_pty_system();

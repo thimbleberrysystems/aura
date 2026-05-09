@@ -4,3 +4,4 @@
 pub mod grpc;
 pub mod context;
 pub mod tools;
+pub mod mcp;
