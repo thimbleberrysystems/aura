@@ -14,8 +14,6 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 mod cfg;
 use crate::cfg::load_config;
-// Use the library-exposed `grpc` module (see `src/lib.rs`).
-use aura::grpc;
 
 /// Detect the current terminal size (columns x rows).
 fn current_pty_size() -> PtySize {
@@ -49,40 +47,7 @@ async fn main() -> anyhow::Result<()> {
         warn!("stdin is not a TTY — raw mode will not be entered");
     }
 
-    // Start gRPC control server (TCP, localhost:50051) — minimal Status RPC.
-    let app_ctx = std::sync::Arc::new(aura::context::AppContext::new());
-
-    // Start MCP based on config file `config/aura.toml` (optional).
-    if let Ok(s) = std::fs::read_to_string("config/aura.toml") {
-        if let Ok(v) = toml::from_str::<toml::Value>(&s) {
-            if let Some(mcp_cfg) = v.get("mcp") {
-                let enabled = mcp_cfg.get("mcp_enabled").and_then(|v| v.as_bool()).unwrap_or(true);
-                if enabled {
-                    let transport = mcp_cfg.get("mcp_transport").and_then(|v| v.as_str()).unwrap_or("uds");
-                    if transport == "uds" {
-                        let path = mcp_cfg.get("mcp_uds").and_then(|v| v.as_str()).unwrap_or("/run/user/1000/aura.sock");
-                        let ctx = std::sync::Arc::clone(&app_ctx);
-                        let path = path.to_string();
-                        tokio::spawn(async move {
-                            if let Err(e) = aura::mcp::serve_uds(&path, ctx).await {
-                                error!("MCP UDS server error: {}", e);
-                            }
-                        });
-                    } else {
-                        let addr_str = mcp_cfg.get("mcp_tcp").and_then(|v| v.as_str()).unwrap_or("127.0.0.1:50051");
-                        if let Ok(addr) = addr_str.parse() {
-                            let ctx = std::sync::Arc::clone(&app_ctx);
-                            tokio::spawn(async move {
-                                if let Err(e) = aura::mcp::serve_tcp(addr, ctx).await {
-                                    error!("MCP TCP server error: {}", e);
-                                }
-                            });
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // MCP feature removed: no management control server is started.
 
     // ── Open PTY ────────────────────────────────────────────────────────────
     let pty_system = native_pty_system();

@@ -4,4 +4,4 @@
 pub mod grpc;
 pub mod context;
 pub mod tools;
-pub mod mcp;
+// `mcp` feature removed: MCP server helpers were deleted.
