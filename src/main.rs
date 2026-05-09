@@ -15,6 +15,8 @@ use tracing::{debug, error, info, warn};
 mod cfg;
 use crate::cfg::load_config;
 mod cli_server;
+mod ingest;
+use ingest::{now_millis, start_ingest_worker, SanitizedChunk};
 use aura::context::AppContext;
 
 /// Detect the current terminal size (columns x rows).
@@ -50,6 +52,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // MCP feature removed: no management control server is started.
+
+    // ── Session ID ───────────────────────────────────────────────────────────
+    let session_id = format!("aura-{}", now_millis());
+    info!("session_id: {}", session_id);
 
     // ── Open PTY ────────────────────────────────────────────────────────────
     let pty_system = native_pty_system();
@@ -113,6 +119,15 @@ async fn main() -> anyhow::Result<()> {
     // Start the control server (UDS + TCP fallback) in the background.
     cli_server::start_control_server(Arc::clone(&app_ctx));
 
+    // ── Ingestion worker ─────────────────────────────────────────────────────
+    let ingest_tx = if config.ingest_enabled() {
+        info!("ingestion enabled; starting worker");
+        Some(start_ingest_worker(config.clone()))
+    } else {
+        info!("ingestion disabled");
+        None
+    };
+
     // ── Thread: blocking stdin → async channel (simple forward)
     let stdin_tx2 = stdin_tx.clone();
     std::thread::spawn(move || {
@@ -144,10 +159,38 @@ async fn main() -> anyhow::Result<()> {
                 Ok(0) => break,
                 Ok(n) => {
                     let data = &buf[..n];
-                    // Feed into termwiz VT parser for debug tracing.
+
+                    // Sanitize VT100 escape sequences → plain text for ingestion.
+                    let mut plain = String::new();
                     parser.parse(data, |action: Action| {
+                        match &action {
+                            Action::Print(c) => plain.push(*c),
+                            Action::PrintString(s) => plain.push_str(s),
+                            Action::Control(ctrl) => {
+                                use termwiz::escape::ControlCode;
+                                if matches!(ctrl, ControlCode::LineFeed | ControlCode::CarriageReturn) {
+                                    plain.push('\n');
+                                }
+                            }
+                            _ => {}
+                        }
                         debug!("vt action: {:?}", action);
                     });
+
+                    // Push plain text to ingest worker if enabled.
+                    let trimmed = plain.trim().to_string();
+                    if !trimmed.is_empty() {
+                        if let Some(ref tx) = ingest_tx {
+                            let chunk = SanitizedChunk {
+                                session_id: session_id.clone(),
+                                ts: now_millis(),
+                                text: trimmed,
+                            };
+                            // Best-effort; drop if channel is full.
+                            let _ = tx.blocking_send(chunk);
+                        }
+                    }
+
                     if pty_out_tx.blocking_send(data.to_vec()).is_err() {
                         break;
                     }

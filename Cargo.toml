@@ -8,7 +8,6 @@ portable-pty = "0.9"
 anyhow = "1.0"
 crossterm = "0.28"
 tokio = { version = "1", features = ["full"] }
-tokio-signal = "0.2"
 termwiz = "0.23"
 atty = "0.2"
 tracing = "0.1"
@@ -19,6 +18,11 @@ tonic = { version = "0.8", features = ["transport"] }
 prost = "0.11"
 tonic-build = "0.8"
 tokio-stream = { version = "0.1", features = ["net"] }
+rig = { package = "rig-core", version = "0.36" }
+rig-sqlite = "0.2"
+sqlite-vec = "0.1"
+tokio-rusqlite = { version = "0.6", features = ["bundled"] }
+rusqlite = "0.32"
 
 [build-dependencies]
 tonic-build = "0.8"

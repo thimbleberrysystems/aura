@@ -95,3 +95,31 @@ Feel free to file issues or pull requests. Run `cargo test` and `cargo build --b
 License
 
 MIT/Apache-2.0 (see repository root for exact licensing terms)
+
+Ingestion (VT100 → embeddings → SQLite vector store)
+---------------------------------------------------
+
+- The daemon sanitizes PTY output (VT100 parsing via `termwiz`) and produces
+	`SanitizedChunk` items containing `session_id`, `ts`, and `text`.
+- Ingestion is enabled by default and configurable via environment variables
+	and `config/aura.toml` entries documented in `src/cfg.rs`.
+- Embeddings are produced using the `rig` providers (default: Ollama
+	`nomic-embed-text`, 768 dims). The embedding provider and dims can be
+	overridden via `AURA_EMBEDDING_MODEL` and `AURA_EMBEDDING_DIMS`.
+- Storage uses `rig-sqlite` backed by the `sqlite-vec` extension. The SQLite
+	file path is controlled by `AURA_SQLITE_PATH` (default `./aura.db`).
+
+Files of interest:
+
+- `src/ingest/mod.rs` — ingestion worker: batching, embedding, and storage.
+- `src/cfg.rs` — configuration helpers and environment variable defaults.
+- `Cargo.toml` — added `rig-sqlite`, `sqlite-vec`, and `tokio-rusqlite`.
+
+Notes:
+
+- A running Ollama server is required to use the default embedding provider.
+- The code initializes `sqlite-vec` before opening the database so that the
+	vector extension is available to the `rig-sqlite` store.
+
+If you'd like, I can add a small integration test or a startup README snippet
+that demonstrates ingest end-to-end (requires Ollama running).
