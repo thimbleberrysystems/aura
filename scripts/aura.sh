@@ -17,20 +17,14 @@ started_by_script=false
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
 install_docker_linux() {
-  echo "Installing Docker (attempt)..."
-  if [ -f /etc/debian_version ]; then
-    sudo apt-get update
-    sudo apt-get install -y ca-certificates curl gnupg lsb-release
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-    sudo apt-get update
-    sudo apt-get install -y docker-ce docker-ce-cli containerd.io
-  elif [ -f /etc/fedora-release ] || command -v dnf >/dev/null 2>&1; then
-    sudo dnf config-manager --add-repo=https://download.docker.com/linux/fedora/docker-ce.repo || true
-    sudo dnf install -y docker-ce docker-ce-cli containerd.io
-    sudo systemctl enable --now docker || true
+  echo "Installing Docker via official convenience script (get.docker.com)..."
+  # Use Docker's convenience installer which handles many distros.
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL https://get.docker.com -o get-docker.sh
+    sudo sh get-docker.sh
+    rm -f get-docker.sh
   else
-    echo "Automatic Docker install unsupported on this Linux distro. Install Docker manually." >&2
+    echo "curl required to run Docker convenience installer. Install curl or install Docker manually." >&2
     return 1
   fi
 }
@@ -110,12 +104,27 @@ for i in $(seq 1 30); do
   fi
 done
 
+# Ensure the embedding model is available in Ollama
+echo "Checking for nomic-embed-text model..."
+if ! curl -sSf "http://localhost:${OLLAMA_PORT}/api/models" 2>/dev/null | grep -q 'nomic-embed-text'; then
+  echo "nomic-embed-text not found. Attempting to pull the model..."
+  if command_exists ollama; then
+    ollama pull nomic-embed-text || true
+  elif docker ps --format '{{.Names}}' | grep -q "^${OLLAMA_CONTAINER}$"; then
+    docker exec "${OLLAMA_CONTAINER}" ollama pull nomic-embed-text || true
+  else
+    echo "Could not pull model: no local ollama CLI and container not running." >&2
+  fi
+else
+  echo "nomic-embed-text model already present."
+fi
+
 # Add target/debug to PATH so aura-cli is available
 export PATH="$(pwd)/target/debug:$PATH"
 
-echo "Launching aura-cli (foreground). Press Ctrl-C to stop."
-if command_exists aura-cli; then
-  aura-cli
+echo "Launching aura (foreground). Press Ctrl-C to stop."
+if command_exists aura; then
+  aura
 elif [ -x ./target/debug/aura ]; then
   ./target/debug/aura
 else
