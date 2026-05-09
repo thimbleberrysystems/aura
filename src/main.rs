@@ -128,16 +128,43 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
-    // ── Thread: blocking stdin → async channel (simple forward)
+    // ── Thread: blocking stdin → async channel (forward) + ingestion (input)
     let stdin_tx2 = stdin_tx.clone();
+    let ingest_tx2 = ingest_tx.clone();
+    let session_id_for_stdin = session_id.clone();
     std::thread::spawn(move || {
         let mut stdin = io::stdin();
         let mut buf = [0u8; 4096];
+        let mut parser = Parser::new();
         loop {
             match stdin.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
                     let data = buf[..n].to_vec();
+
+                    // Sanitize user input for ingestion (plain text)
+                    let mut plain = String::new();
+                    parser.parse(&data, |action: Action| {
+                        match &action {
+                            Action::Print(c) => plain.push(*c),
+                            Action::PrintString(s) => plain.push_str(s),
+                            _ => {}
+                        }
+                    });
+
+                    let trimmed = plain.trim().to_string();
+                    if !trimmed.is_empty() {
+                        if let Some(ref tx) = ingest_tx2 {
+                            let chunk = crate::ingest::SanitizedChunk {
+                                session_id: session_id_for_stdin.clone(),
+                                ts: crate::ingest::now_millis(),
+                                text: trimmed,
+                                direction: "input".to_string(),
+                            };
+                            let _ = tx.blocking_send(chunk);
+                        }
+                    }
+
                     if stdin_tx2.blocking_send(data).is_err() {
                         break;
                     }
@@ -151,6 +178,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // ── Thread: blocking pty reader → async channel ───────────────────────
+    let session_id_for_pty = session_id.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
         let mut parser = Parser::new();
@@ -182,9 +210,10 @@ async fn main() -> anyhow::Result<()> {
                     if !trimmed.is_empty() {
                         if let Some(ref tx) = ingest_tx {
                             let chunk = SanitizedChunk {
-                                session_id: session_id.clone(),
+                                session_id: session_id_for_pty.clone(),
                                 ts: now_millis(),
                                 text: trimmed,
+                                direction: "output".to_string(),
                             };
                             // Best-effort; drop if channel is full.
                             let _ = tx.blocking_send(chunk);

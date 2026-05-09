@@ -9,12 +9,14 @@ use tracing::{debug, info, warn};
 
 use crate::cfg::Config;
 
-/// A sanitized text chunk produced from PTY output.
+/// A sanitized text chunk produced from PTY input or PTY output.
 #[derive(Debug, Clone)]
 pub struct SanitizedChunk {
     pub session_id: String,
     pub ts: i64,
     pub text: String,
+    /// "input" for user stdin, "output" for PTY stdout
+    pub direction: String,
 }
 
 /// The document type stored in the SQLite vector store.
@@ -23,6 +25,7 @@ struct TerminalChunkDoc {
     id: String,
     session_id: String,
     ts: i64,
+    direction: String,
     #[embed]
     content: String,
 }
@@ -36,8 +39,9 @@ impl SqliteVectorStoreTable for TerminalChunkDoc {
         vec![
             Column::new("id", "TEXT PRIMARY KEY"),
             Column::new("session_id", "TEXT"),
-            Column::new("ts", "INTEGER"),
-            Column::new("content", "TEXT"),
+               Column::new("direction", "TEXT"),
+               Column::new("ts", "INTEGER"),
+               Column::new("content", "TEXT"),
         ]
     }
 
@@ -49,8 +53,9 @@ impl SqliteVectorStoreTable for TerminalChunkDoc {
         vec![
             ("id", Box::new(self.id.clone())),
             ("session_id", Box::new(self.session_id.clone())),
-            ("ts", Box::new(self.ts.to_string())),
-            ("content", Box::new(self.content.clone())),
+               ("direction", Box::new(self.direction.clone())),
+               ("ts", Box::new(self.ts.to_string())),
+               ("content", Box::new(self.content.clone())),
         ]
     }
 }
@@ -138,6 +143,7 @@ async fn embed_and_store(cfg: &Config, batch: Vec<SanitizedChunk>) -> Result<()>
             id: format!("{}-{}", c.session_id, c.ts),
             session_id: c.session_id.clone(),
             ts: c.ts,
+            direction: c.direction.clone(),
             content: c.text.clone(),
         })
         .collect();
