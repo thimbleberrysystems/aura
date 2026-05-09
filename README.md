@@ -43,12 +43,22 @@ mkdir -p "$HOME/.local/bin"
 cp target/release/aura-cli "$HOME/.local/bin/"
 ```
 
+
 Control channel
 
 By default `aura` exposes a control channel using a Unix-domain socket on Unix/macOS and a TCP loopback listener as a portable fallback.
 
 - UDS path: `$AURA_CONTROL_SOCKET` or `${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/aura.sock`
 - TCP: `$AURA_CONTROL_TCP` or `127.0.0.1:40001`
+
+Environment variables
+
+The following environment variables control `aura` behavior:
+
+- `AURA_CONTROL_SOCKET`: path to Unix-domain socket for control (overrides default).
+- `AURA_CONTROL_TCP`: TCP address for control fallback (default `127.0.0.1:40001`).
+- `AURA_LOGGING`: set to `1`, `true`, or `yes` to enable logging; otherwise logging is suppressed by default. When enabled, `aura` will respect `RUST_LOG` for fine-grained filtering.
+- `XDG_RUNTIME_DIR`: used to locate the default UDS path when present.
 
 Examples
 
