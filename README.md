@@ -1,47 +1,76 @@
+
 # aura
 
-Minimal PTY example in Rust that spawns your shell on a slave PTY and forwards I/O.
+Minimal PTY example in Rust that spawns your shell on a slave PTY and forwards I/O. This repository provides:
+
+- `aura` — the PTY daemon that runs your shell and exposes a small control API.
+- `aura-cli` — a lightweight client that talks to the control channel to request commands such as `status`.
 
 Quickstart
- - Build and run in debug:
+
+- Build both binaries in debug:
 
 ```bash
-cargo run --bin aura
+cargo build --bins
 ```
 
-- Build release:
-
-```bash
-cargo build --release
-./target/release/aura
-```
-
-Build and install
-
-```bash
-cargo build
-# or
-cargo install --path .
-```
-
-Running interactively
-
-- Run directly from the repo (debug build):
+- Run the daemon:
 
 ```bash
 ./target/debug/aura
 ```
 
-- Run inside an `xterm` (useful for testing as a separate window):
+- In another shell (or inside the `aura` session) invoke the client:
 
 ```bash
-xterm -hold -T "Aura" -e ./target/debug/aura
+./target/debug/aura-cli status
+```
+
+Release build
+
+```bash
+cargo build --release --bins
+./target/release/aura
+./target/release/aura-cli status
+```
+
+Installation
+
+Copy `aura-cli` to a directory on your `PATH` (example for user install):
+
+```bash
+mkdir -p "$HOME/.local/bin"
+cp target/release/aura-cli "$HOME/.local/bin/"
+```
+
+Control channel
+
+By default `aura` exposes a control channel using a Unix-domain socket on Unix/macOS and a TCP loopback listener as a portable fallback.
+
+- UDS path: `$AURA_CONTROL_SOCKET` or `${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/aura.sock`
+- TCP: `$AURA_CONTROL_TCP` or `127.0.0.1:40001`
+
+Examples
+
+- Request status via the client:
+
+```bash
+./target/debug/aura-cli status
+# or, if installed to PATH
+aur a-cli status
+```
+
+- Quick debug using `socat` (UDS):
+
+```bash
+echo -n "status\n" | socat - UNIX-CONNECT:"${AURA_CONTROL_SOCKET:-/run/user/$(id -u)/aura.sock}"
 ```
 
 Implementation notes
 
-- gRPC-related status helper is in [src/grpc.rs](src/grpc.rs).
-- Status/diagnostics helpers are in [src/tools/status.rs](src/tools/status.rs).
+- Control server: `src/cli_server.rs` (UDS + TCP listener, simple one-line command protocol).
+- Client: `src/cli_client.rs` (built as `aura-cli`).
+- Status/diagnostics helpers: `src/tools/status.rs`.
 
 Testing
 
@@ -49,25 +78,9 @@ Testing
 cargo test
 ```
 
-VS Code integrated terminal
-
-Add a profile and set it as the default in your `settings.json`:
-
-```json
-{
-	"terminal.integrated.profiles.linux": {
-		"aura": {
-			"path": "./target/debug/aura",
-			"args": []
-		}
-	},
-	"terminal.integrated.defaultProfile.linux": "aura"
-}
-```
-
 Contributing
 
-Feel free to file issues or pull requests. For MCP changes, update the proto, run `cargo test`, and include integration tests for UDS/TCP where appropriate.
+Feel free to file issues or pull requests. Run `cargo test` and `cargo build --bins` before submitting changes.
 
 License
 

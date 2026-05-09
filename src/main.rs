@@ -14,6 +14,8 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 mod cfg;
 use crate::cfg::load_config;
+mod cli_server;
+use aura::context::AppContext;
 
 /// Detect the current terminal size (columns x rows).
 fn current_pty_size() -> PtySize {
@@ -105,16 +107,23 @@ async fn main() -> anyhow::Result<()> {
     // Channel: pty output bytes → stdout writer task.
     let (pty_out_tx, mut pty_out_rx) = mpsc::channel::<Vec<u8>>(64);
 
-    // ── Thread: blocking stdin → async channel ────────────────────────────
+    // Application context used by `/aura status` command.
+    let app_ctx = Arc::new(AppContext::new());
+
+    // Start the control server (UDS + TCP fallback) in the background.
+    cli_server::start_control_server(Arc::clone(&app_ctx));
+
+    // ── Thread: blocking stdin → async channel (simple forward)
     let stdin_tx2 = stdin_tx.clone();
     std::thread::spawn(move || {
         let mut stdin = io::stdin();
-        let mut buf = [0u8; 1024];
+        let mut buf = [0u8; 4096];
         loop {
             match stdin.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    if stdin_tx2.blocking_send(buf[..n].to_vec()).is_err() {
+                    let data = buf[..n].to_vec();
+                    if stdin_tx2.blocking_send(data).is_err() {
                         break;
                     }
                 }
