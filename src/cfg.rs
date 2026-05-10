@@ -54,6 +54,25 @@ impl Config {
         }
         "llama3".to_string()
     }
+
+    /// Maximum byte length of clean stdout before we bother calling Ollama.
+    /// If the output is shorter than this, we display it as-is.
+    /// Default: 250. Override with AURA_SUMMARIZE_THRESHOLD.
+    pub fn summarize_threshold(&self) -> usize {
+        if let Ok(v) = std::env::var("AURA_SUMMARIZE_THRESHOLD") {
+            if let Ok(n) = v.parse::<usize>() { return n; }
+        }
+        250
+    }
+
+    /// Timeout in seconds for the Ollama summarize call.
+    /// Default: 30. Override with AURA_SUMMARIZE_TIMEOUT_SECS.
+    pub fn summarize_timeout_secs(&self) -> u64 {
+        if let Ok(v) = std::env::var("AURA_SUMMARIZE_TIMEOUT_SECS") {
+            if let Ok(n) = v.parse::<u64>() { return n; }
+        }
+        30
+    }
 }
 
 /// Load configuration from `config/aura.toml` if present.

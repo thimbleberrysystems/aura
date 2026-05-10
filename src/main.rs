@@ -1,6 +1,9 @@
 use anyhow::Context;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size as terminal_size};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use rig::providers::ollama;
+use rig::client::{Nothing, CompletionClient as _};
+use rig::completion::Prompt as _;
 use std::env;
 use std::io::{self, Read, Write};
 use std::sync::{Arc, Mutex};
@@ -16,6 +19,56 @@ mod ingest;
 mod help;
 use ingest::now_millis;
 use aura::context::AppContext;
+
+/// Strip ANSI escape sequences, returning clean UTF-8 text.
+fn strip_ansi(bytes: &[u8]) -> String {
+    // Walk bytes and drop ESC sequences: ESC [ ... final-byte  and  ESC non-[
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b {
+            i += 1;
+            if i < bytes.len() && bytes[i] == b'[' {
+                // CSI sequence — skip until a byte in 0x40–0x7E
+                i += 1;
+                while i < bytes.len() && !(0x40..=0x7E).contains(&bytes[i]) {
+                    i += 1;
+                }
+                i += 1; // skip final byte
+            } else if i < bytes.len() {
+                // Two-byte ESC sequence
+                i += 1;
+            }
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Call Ollama to summarize command output.  Returns the model's reply or an error.
+async fn call_ollama_summarize(
+    base_url: &str,
+    model: &str,
+    cmd: &str,
+    clean_output: &str,
+) -> anyhow::Result<String> {
+    let client = ollama::Client::builder()
+        .api_key(Nothing)
+        .base_url(base_url)
+        .build()?;
+    let agent = client.agent(model).build();
+    let prompt = format!(
+        "Command: {cmd}\nOutput:\n{clean_output}\n\n\
+         Summarize or shorten the output above without losing important information.\n\
+         Rules:\n\
+         - If the output is already very short or cannot be meaningfully shortened, reply with exactly: ORIGINAL\n\
+         - Otherwise reply with only your shortened version, no preamble or explanation."
+    );
+    let reply = agent.prompt(&prompt).await?;
+    Ok(reply)
+}
 
 /// Detect the current terminal size (columns x rows).
 fn current_pty_size() -> PtySize {
@@ -46,6 +99,8 @@ struct CommandState {
     last_pty_activity: Option<Instant>,
     /// Raw PTY bytes accumulated while Running (command output + trailing prompt).
     captured: Vec<u8>,
+    /// Printable text typed by the user for the current command (accumulated until newline).
+    pending_cmd: String,
 }
 
 #[tokio::main]
@@ -125,6 +180,7 @@ async fn main() -> anyhow::Result<()> {
         mode: Mode::Idle,
         last_pty_activity: None,
         captured: Vec::new(),
+        pending_cmd: String::new(),
     }));
 
     // How long PTY must be silent (while Running) before we emit AURA.
@@ -132,7 +188,7 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Stdin thread ──────────────────────────────────────────────────────────
     // Forwards raw bytes to the PTY unchanged (shell receives everything as-is).
-    // Detects newline/CR to transition IDLE → RUNNING.
+    // Detects newline/CR to transition IDLE → RUNNING and records the typed command.
     let stdin_tx2 = stdin_tx.clone();
     let shared_stdin = Arc::clone(&shared);
     std::thread::spawn(move || {
@@ -143,14 +199,25 @@ async fn main() -> anyhow::Result<()> {
                 Ok(0) => break,
                 Ok(n) => {
                     let data = &buf[..n];
-                    // Newline or CR means the user submitted a command.
-                    let has_newline = data.iter().any(|&b| b == b'\n' || b == b'\r');
-                    if has_newline {
-                        let mut s = shared_stdin.lock().unwrap();
-                        if s.mode == Mode::Idle {
-                            s.mode = Mode::Running;
-                            s.last_pty_activity = None;
-                            s.captured.clear();
+                    // Accumulate printable chars for the command text.
+                    for &b in data.iter() {
+                        if b == b'\n' || b == b'\r' {
+                            // newline → commit and transition
+                            let mut s = shared_stdin.lock().unwrap();
+                            if s.mode == Mode::Idle {
+                                s.mode = Mode::Running;
+                                s.last_pty_activity = None;
+                                s.captured.clear();
+                                // pending_cmd is now the completed command; leave it for flusher.
+                            } else {
+                                // Already Running (e.g. multi-line); reset accumulated text.
+                                s.pending_cmd.clear();
+                            }
+                        } else if b.is_ascii_graphic() || b == b' ' {
+                            let mut s = shared_stdin.lock().unwrap();
+                            if s.mode == Mode::Idle {
+                                s.pending_cmd.push(b as char);
+                            }
                         }
                     }
                     // Always forward raw bytes to PTY.
@@ -219,51 +286,100 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Channel: flusher → summarize task  (cmd_text, captured_bytes, prompt_bytes)
+    let (summarize_tx, mut summarize_rx) =
+        mpsc::channel::<(String, Vec<u8>, Vec<u8>)>(16);
+
     // ── Flusher thread ───────────────────────────────────────────────────────
-    // Polls every 50 ms. When Running and PTY has been silent for idle_timeout:
-    //   1. Extracts the trailing prompt from captured bytes (last partial line
-    //      after the final newline — shell-agnostic heuristic).
-    //   2. Emits "AURA\r\n" to the display channel.
-    //   3. Re-emits the prompt bytes so the user sees their shell prompt.
-    //   4. Switches back to Idle.
+    // Polls every 50 ms. When Running and PTY has been silent for idle_timeout,
+    // extracts the trailing prompt and sends (cmd, captured, prompt) to the
+    // summarize task for Ollama processing.
     let shared_flush = Arc::clone(&shared);
-    let pty_out_tx_flush = pty_out_tx.clone();
+    let summarize_tx_flush = summarize_tx.clone();
     std::thread::spawn(move || {
         loop {
             std::thread::sleep(Duration::from_millis(50));
-            let mut emit: Option<Vec<u8>> = None;
+            let mut emit: Option<(String, Vec<u8>)> = None;
             {
                 let mut s = shared_flush.lock().unwrap();
                 if s.mode == Mode::Running {
                     if let Some(last) = s.last_pty_activity {
                         if Instant::now().duration_since(last) >= idle_timeout {
-                            emit = Some(std::mem::take(&mut s.captured));
+                            let captured = std::mem::take(&mut s.captured);
+                            let cmd = std::mem::take(&mut s.pending_cmd);
                             s.mode = Mode::Idle;
                             s.last_pty_activity = None;
+                            emit = Some((cmd, captured));
                         }
                     }
                 }
             }
-            if let Some(captured) = emit {
-                // The prompt is the last partial line (bytes after the final '\n').
-                // This is shell-agnostic: every shell ends its prompt without a newline.
-                let prompt: Vec<u8> = if let Some(pos) = captured.iter().rposition(|&b| b == b'\n') {
-                    captured[pos + 1..].to_vec()
-                } else {
-                    Vec::new()
-                };
+            if let Some((cmd, captured)) = emit {
+                // Shell-agnostic prompt extraction: bytes after the last '\n'.
+                let prompt: Vec<u8> = captured
+                    .iter()
+                    .rposition(|&b| b == b'\n')
+                    .map(|pos| captured[pos + 1..].to_vec())
+                    .unwrap_or_default();
+                let _ = summarize_tx_flush.blocking_send((cmd, captured, prompt));
+            }
+        }
+    });
 
-                // Move to a new line (typed chars were echoed while still Idle),
-                // then show replacement string.
-                let _ = pty_out_tx_flush.blocking_send(b"\r\nAURA\r\n".to_vec());
+    // ── Summarize task (async) ────────────────────────────────────────────────
+    // Receives (cmd, captured_bytes, prompt_bytes) from the flusher.
+    // If the clean output is under the threshold, displays it as-is.
+    // Otherwise calls Ollama with a timeout; falls back to original on any failure.
+    let pty_out_tx_summarize = pty_out_tx.clone();
+    let summarize_threshold = config.summarize_threshold();
+    let summarize_timeout = Duration::from_secs(config.summarize_timeout_secs());
+    let ollama_url = config.ollama_base_url();
+    let completion_model = config.completion_model();
+    tokio::spawn(async move {
+        while let Some((cmd, captured, prompt)) = summarize_rx.recv().await {
+            // Strip ANSI from captured to get clean text for LLM and length check.
+            let clean = strip_ansi(&captured);
 
-                // Re-show the shell prompt so the user can keep typing.
-                if !prompt.is_empty() {
-                    let _ = pty_out_tx_flush.blocking_send(prompt);
+            let display = if clean.len() < summarize_threshold {
+                // Short output — display as-is (original).
+                Some(captured.clone())
+            } else {
+                // Call Ollama to summarize; fall back to original on any failure.
+                let result = tokio::time::timeout(
+                    summarize_timeout,
+                    call_ollama_summarize(&ollama_url, &completion_model, &cmd, &clean),
+                )
+                .await;
+
+                match result {
+                    Ok(Ok(summary)) => {
+                        // Only use summary if it's shorter than the original clean text.
+                        if summary.trim().eq_ignore_ascii_case("ORIGINAL")
+                            || summary.len() >= clean.len()
+                            || summary.trim().is_empty()
+                        {
+                            Some(captured.clone())
+                        } else {
+                            let mut out = b"\r\n".to_vec();
+                            out.extend_from_slice(summary.trim_end().as_bytes());
+                            out.extend_from_slice(b"\r\n");
+                            Some(out)
+                        }
+                    }
+                    // Timeout or error → show original.
+                    _ => Some(captured.clone()),
                 }
+            };
 
-                // TODO: send `captured` to ingest worker for embedding.
-                debug!("captured {} bytes for ingest", captured.len());
+            if let Some(mut bytes) = display {
+                // Ensure output starts on a new line (typed chars were echoed while Idle).
+                let mut out = b"\r\n".to_vec();
+                out.append(&mut bytes);
+                // Re-append the prompt so the user sees their shell prompt.
+                if !prompt.is_empty() {
+                    out.extend_from_slice(&prompt);
+                }
+                let _ = pty_out_tx_summarize.send(out).await;
             }
         }
     });
