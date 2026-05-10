@@ -33,7 +33,49 @@ More importantly: it **remembers**. Every compressed output is embedded into an 
 
 ---
 
-## Architecture
+## How It Works
+
+> One loop. Every command. Gets smarter each time.
+
+```mermaid
+flowchart LR
+    DEV(["👤 Developer\n─────────────────\nJust use your shell.\nNothing changes."])
+
+    subgraph AURA [" ✦  AURA  —  AI-Native Terminal Layer "]
+        direction TB
+
+        WATCH["🔬 Intercepts Silently\nCaptures every command & its output\nZero latency · Zero config required"]
+
+        CLEAN["🧹 Extracts the Signal\nStrips VT100 · ANSI · OSC escape noise\nPure semantic text remains"]
+
+        subgraph RAG [" 🗃  Semantic Memory  ·  Retrieval-Augmented Generation "]
+            direction LR
+            EMBED["🧬 Embeds to Vectors\nnomic-embed-text · 768-dim\nOn-device · Private · Instant"]
+            VSTORE["💾 Vector Store\nIn-memory · Cosine similarity\nSession-scoped · Ephemeral"]
+            EMBED <-->|grows with every command| VSTORE
+        end
+
+        REASON["⚡ On-Device LLM\nllama3 · deepseek · qwen2.5 · any model\nNo cloud · No API key · No data exfiltration\nRAG-augmented · Context-injected prompt"]
+    end
+
+    OUT(["✅ Smart Output\nCompressed · Contextual · Actionable\nGets smarter with every command"])
+
+    DEV -- "$ run any command" --> WATCH
+    WATCH --> CLEAN
+    CLEAN --> EMBED
+    VSTORE -- "top-k relevant history" --> REASON
+    CLEAN -- "clean terminal output" --> REASON
+    REASON --> OUT
+    OUT -- "displayed instantly" --> DEV
+    OUT -- "distilled into memory" --> EMBED
+```
+
+---
+
+## Technical Architecture
+
+<details>
+<summary>Expand full system diagram</summary>
 
 ```mermaid
 flowchart TD
@@ -41,57 +83,59 @@ flowchart TD
         KBD[Keyboard / stdin]
     end
 
-    subgraph AURA_DAEMON["⚙️  AURA Daemon  (aura binary — Rust + Tokio)"]
+    subgraph AURA_DAEMON["⚙️  AURA Daemon  (aura — Rust + Tokio async runtime)"]
         direction TB
-        PTY["PTY Master\n(portable-pty)"]
-        SM["State Machine\nIDLE → RUNNING → PASSTHROUGH"]
+        PTY["PTY Master\nportable-pty · PTY master/slave pair"]
+        SM["State Machine\nIDLE · RUNNING · PASSTHROUGH"]
         FLUSH["Flusher Thread\n200 ms silence detector"]
-        STRIP["ANSI Stripper\n(termwiz VteParser)"]
+        STRIP["ANSI Stripper\ntermwiz VteParser · VT100/VT220/OSC/DCS"]
 
-        subgraph SUMMARIZE["🧠 Summarize Task (async)"]
-            RAG_Q["RAG Query\nembed_text → top_k(3)"]
-            LLM["Ollama LLM\n(completion model)"]
-            RAG_S["RAG Store\nstore_text (fire & forget)"]
+        subgraph SUMMARIZE["🧠 Summarize Task (tokio::spawn)"]
+            RAG_Q["RAG Query\nembed_text → cosine → top_k(3)"]
+            LLM["LLM Call\nrig-core Ollama agent · prompt injection safe"]
+            RAG_S["RAG Store\nstore_text · fire & forget spawn"]
         end
 
-        STORE["In-Memory Vector Store\n(cosine similarity, ephemeral)"]
-        CTRL["Control Server\nUnix socket + TCP :40001"]
+        STORE["InMemoryStore\nVec of StoredChunk · RwLock\ncosine similarity · ephemeral"]
+        CTRL["Control Server\nUnix socket · TCP :40001\nsingle-line command/reply"]
     end
 
-    subgraph OLLAMA["🦙 Ollama (Docker / local)"]
-        EMB_MODEL["Embedding Model\n(nomic-embed-text)"]
-        COMP_MODEL["Completion Model\n(llama3 / any)"]
+    subgraph OLLAMA["🦙 Ollama  (Docker / local binary)"]
+        EMB_MODEL["Embedding Model\nnomic-embed-text\ndirect HTTP · /api/embeddings"]
+        COMP_MODEL["Completion Model\nllama3 / any Ollama model\nrig-core agent abstraction"]
     end
 
-    subgraph SHELL["🐚 Child Shell (bash / zsh / fish)"]
-        SHELL_PROC["Shell Process\n(PTY slave)"]
+    subgraph SHELL["🐚 Child Shell"]
+        SHELL_PROC["bash · zsh · fish\nPTY slave · real process"]
     end
 
     subgraph CLI["🖥  aura-cli"]
-        CLI_BIN["aura-cli binary\n(status, help)"]
+        CLI_BIN["aura-cli binary\nstatus · help"]
     end
 
     KBD -->|raw bytes| PTY
     PTY <-->|PTY master/slave| SHELL_PROC
     SHELL_PROC -->|stdout + stderr| SM
-    SM -->|Running: capture & suppress| FLUSH
-    SM -->|Idle / Passthrough: forward raw| USER
+    SM -->|Running: buffer & suppress| FLUSH
+    SM -->|Idle / Passthrough: forward verbatim| USER
     FLUSH -->|cmd + captured bytes| STRIP
     STRIP -->|clean text| RAG_Q
     RAG_Q -->|query vector| EMB_MODEL
-    EMB_MODEL -->|embedding| RAG_Q
-    RAG_Q -->|top-k chunks| LLM
+    EMB_MODEL -->|Vec f32 embedding| RAG_Q
+    RAG_Q -->|top-k context chunks| LLM
     STRIP -->|clean text| LLM
-    LLM -->|summary| COMP_MODEL
+    LLM -->|augmented prompt| COMP_MODEL
     COMP_MODEL -->|model reply| LLM
-    LLM -->|compressed output| USER
+    LLM -->|compressed summary| USER
     LLM -->|distilled text| RAG_S
-    RAG_S -->|embed & store| EMB_MODEL
-    RAG_S -->|Vec<f32> + content| STORE
+    RAG_S -->|embed & write| EMB_MODEL
+    RAG_S -->|Vec f32 + content| STORE
     STORE -->|retrieved chunks| RAG_Q
     CLI_BIN <-->|Unix socket / TCP| CTRL
-    CTRL -->|AppContext| AURA_DAEMON
+    CTRL -->|AppContext · uptime| AURA_DAEMON
 ```
+
+</details>
 
 ---
 
