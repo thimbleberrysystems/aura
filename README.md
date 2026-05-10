@@ -91,9 +91,6 @@ flowchart TD
 
 ## Technical Architecture
 
-<details>
-<summary>Expand full system diagram</summary>
-
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#4F46E5', 'primaryTextColor': '#ffffff', 'primaryBorderColor': '#6366F1', 'lineColor': '#818CF8', 'secondaryColor': '#1E1B4B', 'tertiaryColor': '#0F0D1F', 'clusterBkg': '#1E1B4B', 'clusterBorder': '#3730A3', 'titleColor': '#C7D2FE', 'edgeLabelBackground': '#312E81', 'fontSize': '15px'}}}%%
 flowchart TD
@@ -172,8 +169,6 @@ flowchart TD
     class CTRL ctrlCls
     class CLI_BIN cliCls
 ```
-
-</details>
 
 ---
 
@@ -291,7 +286,7 @@ This is the unsexy, invisible infrastructure layer that every "AI coding assista
 
 ## Roadmap
 
-- [ ] Persistent cross-session memory (SQLite / DuckDB vector extension)
+- [ ] Persistent cross-session memory (DuckDB vector extension)
 - [ ] `aura export` — serialize session memory to structured JSON for downstream agents
 - [ ] Semantic search across session history via `aura-cli search <query>`
 - [ ] Agent hooks — trigger external actions on pattern match (e.g., auto-open issue on detected crash)
@@ -309,70 +304,4 @@ AURA is at the frontier of local AI tooling. If you're building in the AI develo
 
 ## License
 
-MIT © Thimbleberry Systems
-
-- `XDG_RUNTIME_DIR`: used to locate the default UDS path when present.
-
-Examples
-
-- Request status via the client:
-
-```bash
-./target/debug/aura-cli status
-# or, if installed to PATH
-aur a-cli status
-```
-
-- Quick debug using `socat` (UDS):
-
-```bash
-echo -n "status\n" | socat - UNIX-CONNECT:"${AURA_CONTROL_SOCKET:-/run/user/$(id -u)/aura.sock}"
-```
-
-Implementation notes
-
-- Control server: `src/cli_server.rs` (UDS + TCP listener, simple one-line command protocol).
-- Client: `src/cli_client.rs` (built as `aura-cli`).
-- Status/diagnostics helpers: `src/tools/status.rs`.
-
-Testing
-
-```bash
-cargo test
-```
-
-Contributing
-
-Feel free to file issues or pull requests. Run `cargo test` and `cargo build --bins` before submitting changes.
-
-License
-
-MIT/Apache-2.0 (see repository root for exact licensing terms)
-
-Ingestion (VT100 → embeddings → SQLite vector store)
----------------------------------------------------
-
-- The daemon sanitizes PTY output (VT100 parsing via `termwiz`) and produces
-	`SanitizedChunk` items containing `session_id`, `ts`, and `text`.
-- Ingestion is enabled by default and configurable via environment variables
-	and `config/aura.toml` entries documented in `src/cfg.rs`.
-- Embeddings are produced using the `rig` providers (default: Ollama
-	`nomic-embed-text`, 768 dims). The embedding provider and dims can be
-	overridden via `AURA_EMBEDDING_MODEL` and `AURA_EMBEDDING_DIMS`.
-- Storage uses `rig-sqlite` backed by the `sqlite-vec` extension. The SQLite
-	file path is controlled by `AURA_SQLITE_PATH` (default `./aura.db`).
-
-Files of interest:
-
-- `src/ingest/mod.rs` — ingestion worker: batching, embedding, and storage.
-- `src/cfg.rs` — configuration helpers and environment variable defaults.
-- `Cargo.toml` — added `rig-sqlite`, `sqlite-vec`, and `tokio-rusqlite`.
-
-Notes:
-
-- A running Ollama server is required to use the default embedding provider.
-- The code initializes `sqlite-vec` before opening the database so that the
-	vector extension is available to the `rig-sqlite` store.
-
-If you'd like, I can add a small integration test or a startup README snippet
-that demonstrates ingest end-to-end (requires Ollama running).
+[MIT](LICENSE)
