@@ -360,14 +360,29 @@ async fn main() -> anyhow::Result<()> {
                         {
                             Some(captured.clone())
                         } else {
+                            // Prepend a short indicator so the user knows this was
+                            // produced by Ollama as a summary of a long output.
                             let mut out = b"\r\n".to_vec();
+                            out.extend_from_slice(b"[AURA: summarized]\r\n");
                             out.extend_from_slice(summary.trim_end().as_bytes());
                             out.extend_from_slice(b"\r\n");
                             Some(out)
                         }
                     }
-                    // Timeout or error → show original.
-                    _ => Some(captured.clone()),
+                    Ok(Err(err)) => {
+                        // Ollama client returned an error — inform the user, then
+                        // fall back to showing the original captured output.
+                        let err_msg = format!("\r\n[AURA: summarize error: {}]\r\n", err);
+                        let mut out = err_msg.into_bytes();
+                        out.extend_from_slice(&captured.clone());
+                        Some(out)
+                    }
+                    Err(_) => {
+                        // Timeout — inform user and fall back to original output.
+                        let mut out = b"\r\n[AURA: summarize timeout]\r\n".to_vec();
+                        out.extend_from_slice(&captured.clone());
+                        Some(out)
+                    }
                 }
             };
 

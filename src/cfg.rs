@@ -71,7 +71,7 @@ impl Config {
         if let Ok(v) = std::env::var("AURA_SUMMARIZE_TIMEOUT_SECS") {
             if let Ok(n) = v.parse::<u64>() { return n; }
         }
-        30
+        3000
     }
 }
 
