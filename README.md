@@ -17,7 +17,7 @@
 
 ## The Problem
 
-Developers spend hours in the terminal. Each command produces output — build logs, error traces, network diagnostics, deployment statuses — that vanishes from working memory the moment it scrolls off screen. You copy-paste into ChatGPT. You re-run commands you ran twenty minutes ago. You lose context between sessions.
+Developers spend hours in the terminal. Each command produces output — build logs, error traces, network diagnostics, deployment statuses — that vanishes from working memory the moment it scrolls off screen. You re-run commands you ran twenty minutes ago. You lose context between sessions.
 
 **This is a solved problem. You just haven't had the right tool.**
 
@@ -38,36 +38,53 @@ More importantly: it **remembers**. Every compressed output is embedded into an 
 > One loop. Every command. Gets smarter each time.
 
 ```mermaid
-flowchart LR
-    DEV(["👤 Developer\n─────────────────\nJust use your shell.\nNothing changes."])
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#6D28D9', 'primaryTextColor': '#ffffff', 'primaryBorderColor': '#7C3AED', 'lineColor': '#A78BFA', 'secondaryColor': '#1E1B4B', 'tertiaryColor': '#0F0D1F', 'clusterBkg': '#1E1B4B', 'clusterBorder': '#4C1D95', 'titleColor': '#DDD6FE', 'edgeLabelBackground': '#2E1065', 'fontSize': '16px'}}}%%
+flowchart TD
+    DEV(["👤  You\n──────────────────────────────\nJust use your shell normally.\nNothing changes."])
 
-    subgraph AURA [" ✦  AURA  —  AI-Native Terminal Layer "]
+    subgraph AURA ["  ✦  AURA  ·  AI-Native Terminal Layer  "]
         direction TB
 
-        WATCH["🔬 Intercepts Silently\nCaptures every command & its output\nZero latency · Zero config required"]
+        WATCH["🔬  Intercepts Every Command\nCaptures output silently\nZero latency · Zero config"]
 
-        CLEAN["🧹 Extracts the Signal\nStrips VT100 · ANSI · OSC escape noise\nPure semantic text remains"]
+        CLEAN["🧹  Extracts Pure Signal\nStrips ANSI · VT100 · OSC noise\nClean semantic text remains"]
 
-        subgraph RAG [" 🗃  Semantic Memory  ·  Retrieval-Augmented Generation "]
+        subgraph RAG ["  🗃  Semantic Memory  ·  Retrieval-Augmented Generation  "]
             direction LR
-            EMBED["🧬 Embeds to Vectors\nnomic-embed-text · 768-dim\nOn-device · Private · Instant"]
-            VSTORE["💾 Vector Store\nIn-memory · Cosine similarity\nSession-scoped · Ephemeral"]
-            EMBED <-->|grows with every command| VSTORE
+            EMBED["🧬  Vector Embedding\nnomic-embed-text · 768-dim\nOn-device · Private · Instant"]
+            VSTORE["💾  In-Memory Vector Store\nCosine similarity\nGrows smarter every command"]
+            EMBED <-->|persists & recalls| VSTORE
         end
 
-        REASON["⚡ On-Device LLM\nllama3 · deepseek · qwen2.5 · any model\nNo cloud · No API key · No data exfiltration\nRAG-augmented · Context-injected prompt"]
+        REASON["⚡  On-Device LLM Reasoning\nllama3 · deepseek · qwen2.5 · any model\nNo cloud · No API key · No data leaves your machine\nRAG context-injected · Prompt-injection safe"]
     end
 
-    OUT(["✅ Smart Output\nCompressed · Contextual · Actionable\nGets smarter with every command"])
+    OUT(["✅  Smart Output\nCompressed · Contextual · Actionable\nGets smarter with every command"])
 
-    DEV -- "$ run any command" --> WATCH
+    DEV -- "  $ run any command  " --> WATCH
     WATCH --> CLEAN
     CLEAN --> EMBED
-    VSTORE -- "top-k relevant history" --> REASON
-    CLEAN -- "clean terminal output" --> REASON
+    VSTORE -. "top-k relevant history" .-> REASON
+    CLEAN --> REASON
     REASON --> OUT
-    OUT -- "displayed instantly" --> DEV
+    OUT -. "displayed in your terminal" .-> DEV
     OUT -- "distilled into memory" --> EMBED
+
+    classDef userCls fill:#F59E0B,stroke:#D97706,color:#1C1917
+    classDef watchCls fill:#6D28D9,stroke:#4C1D95,color:#EDE9FE
+    classDef cleanCls fill:#1D4ED8,stroke:#1E40AF,color:#EFF6FF
+    classDef embedCls fill:#047857,stroke:#065F46,color:#D1FAE5
+    classDef storeCls fill:#0E7490,stroke:#164E63,color:#CFFAFE
+    classDef reasonCls fill:#9D174D,stroke:#831843,color:#FCE7F3
+    classDef outCls fill:#B45309,stroke:#92400E,color:#FEF3C7
+
+    class DEV userCls
+    class WATCH watchCls
+    class CLEAN cleanCls
+    class EMBED embedCls
+    class VSTORE storeCls
+    class REASON reasonCls
+    class OUT outCls
 ```
 
 ---
@@ -78,6 +95,7 @@ flowchart LR
 <summary>Expand full system diagram</summary>
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#4F46E5', 'primaryTextColor': '#ffffff', 'primaryBorderColor': '#6366F1', 'lineColor': '#818CF8', 'secondaryColor': '#1E1B4B', 'tertiaryColor': '#0F0D1F', 'clusterBkg': '#1E1B4B', 'clusterBorder': '#3730A3', 'titleColor': '#C7D2FE', 'edgeLabelBackground': '#312E81', 'fontSize': '15px'}}}%%
 flowchart TD
     subgraph USER["👤 User"]
         KBD[Keyboard / stdin]
@@ -133,6 +151,26 @@ flowchart TD
     STORE -->|retrieved chunks| RAG_Q
     CLI_BIN <-->|Unix socket / TCP| CTRL
     CTRL -->|AppContext · uptime| AURA_DAEMON
+
+    classDef userCls fill:#F59E0B,stroke:#D97706,color:#1C1917
+    classDef ptySmCls fill:#6D28D9,stroke:#4C1D95,color:#EDE9FE
+    classDef stripCls fill:#1D4ED8,stroke:#1E40AF,color:#EFF6FF
+    classDef ragCls fill:#047857,stroke:#065F46,color:#D1FAE5
+    classDef llmCls fill:#9D174D,stroke:#831843,color:#FCE7F3
+    classDef storeCls fill:#0E7490,stroke:#164E63,color:#CFFAFE
+    classDef ollamaCls fill:#065F46,stroke:#047857,color:#D1FAE5
+    classDef ctrlCls fill:#B45309,stroke:#92400E,color:#FEF3C7
+    classDef cliCls fill:#B45309,stroke:#92400E,color:#FEF3C7
+
+    class KBD userCls
+    class PTY,SM,FLUSH ptySmCls
+    class STRIP stripCls
+    class RAG_Q ragCls
+    class LLM,RAG_S llmCls
+    class STORE storeCls
+    class EMB_MODEL,COMP_MODEL,SHELL_PROC ollamaCls
+    class CTRL ctrlCls
+    class CLI_BIN cliCls
 ```
 
 </details>
