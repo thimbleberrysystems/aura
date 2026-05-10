@@ -19,7 +19,7 @@ use crate::cfg::load_config;
 mod cli_server;
 mod ingest;
 mod help;
-use ingest::now_millis;
+use ingest::{now_millis, init_global_store, global_store, embed_text, store_text};
 use aura::context::AppContext;
 
 /// Strip ANSI/VT escape sequences using the termwiz parser, returning clean UTF-8 text.
@@ -38,17 +38,31 @@ fn strip_ansi(bytes: &[u8]) -> String {
 // preamble stripping removed: enforced via prompt instruction instead
 
 /// Call Ollama to summarize command output.  Returns the model's reply or an error.
+/// `context_chunks` are semantically similar past summaries retrieved from the RAG store.
 async fn call_ollama_summarize(
     base_url: &str,
     model: &str,
     cmd: &str,
     clean_output: &str,
+    context_chunks: &[String],
 ) -> anyhow::Result<String> {
     let client = ollama::Client::builder()
         .api_key(Nothing)
         .base_url(base_url)
         .build()?;
     let agent = client.agent(model).build();
+    let context_block = if context_chunks.is_empty() {
+        String::new()
+    } else {
+        let items = context_chunks
+            .iter()
+            .enumerate()
+            .map(|(i, c)| format!("[{}] {}", i + 1, c))
+            .collect::<Vec<_>>()
+            .join("\n---\n");
+        format!("Previous Context (similar past commands, for reference only):\n{}\n\n", items)
+    };
+    debug!("rag: injecting {} context chunks (block len={})", context_chunks.len(), context_block.len());
     let prompt = format!(
         r#"Distill this terminal output for another LLM.
 Discard: progress bars, UI noise, ANSI codes, and repetitive 'in-progress' logs.
@@ -56,12 +70,14 @@ Preserve: Error messages, stack traces, exit codes, and unique identifiers (IPs,
 Constraint: Output ONLY the distilled data. No conversational filler. No leading preamble.
 Goal: Remember, you are a compressor which reduces text size, but still preserves important info. Your output will be read by another LLM, so make it suitable for LLM. No additional or extra info should be added.
 If the output is already concise, return it as-is.
+Optional: If previous context is provided, use it only to understand what details are important. Prioritise the current output. If previous context is not useful, ignore it silently.
 Dont add unnecessary line breaks, and do not add any preamble like "Summary:" or "Distilled output:". Just return the distilled text.
-
+{context_block}
 Command: {cmd}
 <BEGIN_OUTPUT>
 {clean_output}
 <END_OUTPUT>"#,
+        context_block = context_block,
         cmd = cmd,
         clean_output = clean_output
     );
@@ -106,6 +122,8 @@ struct CommandState {
 async fn main() -> anyhow::Result<()> {
     // Load config — default: logging disabled. If enabled, tracing will honor RUST_LOG.
     let config = load_config();
+    // Initialise ephemeral in-memory RAG store for this session.
+    init_global_store();
     let env_filter = if config.logging_enabled() {
         tracing_subscriber::EnvFilter::from_default_env()
     } else {
@@ -341,24 +359,45 @@ async fn main() -> anyhow::Result<()> {
             let summarize_timeout = Duration::from_secs(config_summarize.summarize_timeout_secs());
             let ollama_url = config_summarize.ollama_base_url();
             let completion_model = config_summarize.completion_model();
+            let embedding_model = config_summarize.embedding_model();
+            let disabled = config_summarize.disable_summary();
+            // AURA_DISABLE_RAG=1 skips all embedding/store operations.
+            let rag_disabled = config_summarize.disable_rag();
 
             // Strip ANSI from captured to get clean text for LLM and length check.
             let clean = strip_ansi(&captured);
 
-            // disable_summary: re-read AURA_DISABLE_SUMMARY on every command so
-            // it can be changed in the *outer* shell and take effect immediately
-            // on the next command (standard env var semantics; setting it inside
-            // the PTY shell won't work — child processes can't modify parent env).
-            let disabled = config_summarize.disable_summary();
+            // ── RAG query: retrieve past context before calling the LLM ──────────────
+            // Only runs when summarization will actually happen and RAG is enabled.
+            // Uses the dedicated embedding model (AURA_EMBEDDING_MODEL, default
+            // nomic-embed-text) — NOT the completion model — to avoid dimension
+            // mismatches and keep embedding fast.
+            let context_chunks: Vec<String> = if !disabled && !rag_disabled && clean.len() >= summarize_threshold {
+                let q = format!("Command: {}\n{}", cmd, &clean[..clean.len().min(512)]);
+                match embed_text(&ollama_url, &embedding_model, &q).await {
+                    Ok(emb) => {
+                        let store = global_store();
+                        let r = store.read().await;
+                        let hits = r.top_k(&emb, 3);
+                        debug!("rag: top_k returned {} hits", hits.len());
+                        hits.into_iter().map(|(_, _, content)| content).collect()
+                    }
+                    Err(e) => { warn!("rag: embed query failed: {:#}", e); vec![] }
+                }
+            } else {
+                vec![]
+            };
 
-            let display = if disabled || clean.len() < summarize_threshold {
+            // ── Summarize ────────────────────────────────────────────────────────────
+            // Returns (bytes_to_display, text_to_store_in_rag).
+            let (display, to_store) = if disabled || clean.len() < summarize_threshold {
                 // Summaries disabled via env OR short output — display as-is (original).
-                Some(captured.clone())
+                (Some(captured.clone()), clean.clone())
             } else {
                 // Call Ollama to summarize; fall back to original on any failure.
                 let result = tokio::time::timeout(
                     summarize_timeout,
-                    call_ollama_summarize(&ollama_url, &completion_model, &cmd, &clean),
+                    call_ollama_summarize(&ollama_url, &completion_model, &cmd, &clean, &context_chunks),
                 )
                 .await;
 
@@ -369,10 +408,10 @@ async fn main() -> anyhow::Result<()> {
                             || summary.len() >= clean.len()
                             || summary.trim().is_empty()
                         {
-                            Some(captured.clone())
+                            (Some(captured.clone()), clean.clone())
                         } else {
                             // Use the model reply directly; prompt instructs no preamble.
-                            let body = summary.trim_end();
+                            let body = summary.trim_end().to_string();
                             // Normalise LLM line endings: plain \n → \r\n so the
                             // cursor returns to column 0 in raw PTY mode.
                             let normalised = body.replace('\n', "\r\n");
@@ -380,7 +419,7 @@ async fn main() -> anyhow::Result<()> {
                             out.extend_from_slice(b"[AURA] summarized (export AURA_DISABLE_SUMMARY=1 to disable)\r\n");
                             out.extend_from_slice(normalised.as_bytes());
                             out.extend_from_slice(b"\r\n");
-                            Some(out)
+                            (Some(out), body)
                         }
                     }
                     Ok(Err(err)) => {
@@ -388,14 +427,14 @@ async fn main() -> anyhow::Result<()> {
                         // fall back to showing the original captured output.
                         let err_msg = format!("\r\n[AURA: summarize error: {}]\r\n", err);
                         let mut out = err_msg.into_bytes();
-                        out.extend_from_slice(&captured.clone());
-                        Some(out)
+                        out.extend_from_slice(&captured);
+                        (Some(out), clean.clone())
                     }
                     Err(_) => {
                         // Timeout — inform user and fall back to original output.
                         let mut out = b"\r\n[AURA: summarize timeout]\r\n".to_vec();
-                        out.extend_from_slice(&captured.clone());
-                        Some(out)
+                        out.extend_from_slice(&captured);
+                        (Some(out), clean.clone())
                     }
                 }
             };
@@ -409,6 +448,22 @@ async fn main() -> anyhow::Result<()> {
                     out.extend_from_slice(&prompt);
                 }
                 let _ = pty_out_tx_summarize.send(out).await;
+            }
+
+            // ── RAG: embed and store after display (fire and forget) ──────────────
+            // Runs after the summary has been sent so it can never influence the
+            // current call. Stores every non-empty command output (using the
+            // distilled text when available, otherwise raw clean output).
+            // Skipped when RAG is disabled or clean output is empty.
+            if !rag_disabled && !to_store.trim().is_empty() {
+                let store_content = format!("Command: {}\n{}", cmd, to_store);
+                let base = ollama_url.clone();
+                let emb_model = embedding_model.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = store_text(&base, &emb_model, &store_content).await {
+                        warn!("rag: store_text failed: {:#}", e);
+                    }
+                });
             }
         }
     });

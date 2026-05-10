@@ -71,6 +71,45 @@ pub fn init_global_store() {
 pub fn global_store() -> Arc<RwLock<InMemoryStore>> {
     GLOBAL_STORE.get().expect("global store not initialized").clone()
 }
+
+/// Embed a single string by calling Ollama's /api/embeddings endpoint directly.
+/// This avoids rig's EmbeddingsBuilder/dimension-validation issues entirely.
+/// Works with any Ollama model (nomic-embed-text, llama3, etc.) — dimensions
+/// are determined by what Ollama returns, not configured statically.
+pub async fn embed_text(base_url: &str, model: &str, text: &str) -> Result<Vec<f32>> {
+    let url = format!("{}/api/embeddings", base_url.trim_end_matches('/'));
+    let client = reqwest::Client::new();
+    let resp: serde_json::Value = client
+        .post(&url)
+        .json(&serde_json::json!({ "model": model, "prompt": text }))
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("embed HTTP request failed: {e}"))?
+        .json()
+        .await
+        .map_err(|e| anyhow::anyhow!("embed HTTP response not JSON: {e}"))?;
+
+    let arr = resp["embedding"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("Ollama /api/embeddings returned no 'embedding' field — is the model '{}' pulled?", model))?;
+
+    Ok(arr.iter().map(|v: &serde_json::Value| v.as_f64().unwrap_or(0.0) as f32).collect())
+}
+
+/// Embed `text` and store it in the global in-memory vector store.
+pub async fn store_text(base_url: &str, model: &str, text: &str) -> Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static STORE_ID: AtomicU64 = AtomicU64::new(1);
+
+    init_global_store();
+    let emb = embed_text(base_url, model, text).await?;
+    let id = format!("{}-{}", now_millis(), STORE_ID.fetch_add(1, Ordering::SeqCst));
+    let store = global_store();
+    let mut w = store.write().await;
+    w.add_batch(vec![(id, emb, text.to_string())]).await;
+    info!("rag: stored chunk (len={})", text.len());
+    Ok(())
+}
 // ---------------------------------------------------------------------------------------
 
 /// Start the background ingestion worker.

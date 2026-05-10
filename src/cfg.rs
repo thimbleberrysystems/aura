@@ -82,6 +82,17 @@ impl Config {
         }
         3000
     }
+
+    /// Disable RAG (embedding + vector store) entirely.
+    /// When set, summarization receives no past context and nothing is stored.
+    /// Set AURA_DISABLE_RAG=1 to disable.
+    pub fn disable_rag(&self) -> bool {
+        if let Ok(v) = std::env::var("AURA_DISABLE_RAG") {
+            let v = v.to_lowercase();
+            return matches!(v.as_str(), "1" | "true" | "yes");
+        }
+        false
+    }
 }
 
 /// Load configuration from `config/aura.toml` if present.
