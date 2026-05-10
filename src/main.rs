@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
+use termwiz::escape::parser::Parser as VteParser;
+use termwiz::escape::Action;
 use tracing::{debug, error, info, warn};
 mod cfg;
 use crate::cfg::load_config;
@@ -20,32 +22,20 @@ mod help;
 use ingest::now_millis;
 use aura::context::AppContext;
 
-/// Strip ANSI escape sequences, returning clean UTF-8 text.
+/// Strip ANSI/VT escape sequences using the termwiz parser, returning clean UTF-8 text.
+/// Handles the full escape sequence spec (CSI, OSC, DCS, SS3, etc.) correctly.
 fn strip_ansi(bytes: &[u8]) -> String {
-    // Walk bytes and drop ESC sequences: ESC [ ... final-byte  and  ESC non-[
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == 0x1b {
-            i += 1;
-            if i < bytes.len() && bytes[i] == b'[' {
-                // CSI sequence — skip until a byte in 0x40–0x7E
-                i += 1;
-                while i < bytes.len() && !(0x40..=0x7E).contains(&bytes[i]) {
-                    i += 1;
-                }
-                i += 1; // skip final byte
-            } else if i < bytes.len() {
-                // Two-byte ESC sequence
-                i += 1;
-            }
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
+    let mut parser = VteParser::new();
+    let mut text = String::new();
+    parser.parse(bytes, |action| match action {
+        Action::Print(c) => text.push(c),
+        Action::PrintString(s) => text.push_str(&s),
+        _ => {}
+    });
+    text
 }
+
+// preamble stripping removed: enforced via prompt instruction instead
 
 /// Call Ollama to summarize command output.  Returns the model's reply or an error.
 async fn call_ollama_summarize(
@@ -60,11 +50,20 @@ async fn call_ollama_summarize(
         .build()?;
     let agent = client.agent(model).build();
     let prompt = format!(
-        "Command: {cmd}\nOutput:\n{clean_output}\n\n\
-         Summarize or shorten the output above without losing important information.\n\
-         Rules:\n\
-         - If the output is already very short or cannot be meaningfully shortened, reply with exactly: ORIGINAL\n\
-         - Otherwise reply with only your shortened version, no preamble or explanation."
+        r#"Distill this terminal output for another LLM.
+Discard: progress bars, UI noise, ANSI codes, and repetitive 'in-progress' logs.
+Preserve: Error messages, stack traces, exit codes, and unique identifiers (IPs, IDs, paths).
+Constraint: Output ONLY the distilled data. No conversational filler. No leading preamble.
+Goal: Remember, you are a compressor which reduces text size, but still preserves important info. Your output will be read by another LLM, so make it suitable for LLM. No additional or extra info should be added.
+If the output is already concise, return it as-is.
+Dont add unnecessary line breaks, and do not add any preamble like "Summary:" or "Distilled output:". Just return the distilled text.
+
+Command: {cmd}
+<BEGIN_OUTPUT>
+{clean_output}
+<END_OUTPUT>"#,
+        cmd = cmd,
+        clean_output = clean_output
     );
     let reply = agent.prompt(&prompt).await?;
     Ok(reply)
@@ -331,17 +330,29 @@ async fn main() -> anyhow::Result<()> {
     // If the clean output is under the threshold, displays it as-is.
     // Otherwise calls Ollama with a timeout; falls back to original on any failure.
     let pty_out_tx_summarize = pty_out_tx.clone();
-    let summarize_threshold = config.summarize_threshold();
-    let summarize_timeout = Duration::from_secs(config.summarize_timeout_secs());
-    let ollama_url = config.ollama_base_url();
-    let completion_model = config.completion_model();
+    let config_summarize = config.clone();
     tokio::spawn(async move {
         while let Some((cmd, captured, prompt)) = summarize_rx.recv().await {
+            // Re-read all settings live on every command so runtime env var
+            // changes (AURA_DISABLE_SUMMARY, AURA_SUMMARIZE_THRESHOLD,
+            // AURA_SUMMARIZE_TIMEOUT_SECS, AURA_OLLAMA_BASE_URL, etc.) take
+            // effect immediately without restarting aura.
+            let summarize_threshold = config_summarize.summarize_threshold();
+            let summarize_timeout = Duration::from_secs(config_summarize.summarize_timeout_secs());
+            let ollama_url = config_summarize.ollama_base_url();
+            let completion_model = config_summarize.completion_model();
+
             // Strip ANSI from captured to get clean text for LLM and length check.
             let clean = strip_ansi(&captured);
 
-            let display = if clean.len() < summarize_threshold {
-                // Short output — display as-is (original).
+            // disable_summary: re-read AURA_DISABLE_SUMMARY on every command so
+            // it can be changed in the *outer* shell and take effect immediately
+            // on the next command (standard env var semantics; setting it inside
+            // the PTY shell won't work — child processes can't modify parent env).
+            let disabled = config_summarize.disable_summary();
+
+            let display = if disabled || clean.len() < summarize_threshold {
+                // Summaries disabled via env OR short output — display as-is (original).
                 Some(captured.clone())
             } else {
                 // Call Ollama to summarize; fall back to original on any failure.
@@ -360,11 +371,14 @@ async fn main() -> anyhow::Result<()> {
                         {
                             Some(captured.clone())
                         } else {
-                            // Prepend a short indicator so the user knows this was
-                            // produced by Ollama as a summary of a long output.
+                            // Use the model reply directly; prompt instructs no preamble.
+                            let body = summary.trim_end();
+                            // Normalise LLM line endings: plain \n → \r\n so the
+                            // cursor returns to column 0 in raw PTY mode.
+                            let normalised = body.replace('\n', "\r\n");
                             let mut out = b"\r\n".to_vec();
-                            out.extend_from_slice(b"[AURA: summarized]\r\n");
-                            out.extend_from_slice(summary.trim_end().as_bytes());
+                            out.extend_from_slice(b"[AURA] summarized (export AURA_DISABLE_SUMMARY=1 to disable)\r\n");
+                            out.extend_from_slice(normalised.as_bytes());
                             out.extend_from_slice(b"\r\n");
                             Some(out)
                         }

@@ -55,6 +55,15 @@ impl Config {
         "llama3".to_string()
     }
 
+    /// If `AURA_DISABLE_SUMMARY` is set (1/true/yes), disable summarization.
+    pub fn disable_summary(&self) -> bool {
+        if let Ok(v) = std::env::var("AURA_DISABLE_SUMMARY") {
+            let v = v.to_lowercase();
+            return matches!(v.as_str(), "1" | "true" | "yes");
+        }
+        false
+    }
+
     /// Maximum byte length of clean stdout before we bother calling Ollama.
     /// If the output is shorter than this, we display it as-is.
     /// Default: 250. Override with AURA_SUMMARIZE_THRESHOLD.
