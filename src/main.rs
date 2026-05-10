@@ -16,7 +16,8 @@ mod cfg;
 use crate::cfg::load_config;
 mod cli_server;
 mod ingest;
-use ingest::{now_millis, start_ingest_worker, SanitizedChunk};
+mod help;
+use ingest::{now_millis, start_ingest_worker};
 use aura::context::AppContext;
 
 /// Detect the current terminal size (columns x rows).
@@ -120,22 +121,19 @@ async fn main() -> anyhow::Result<()> {
     cli_server::start_control_server(Arc::clone(&app_ctx));
 
     // ── Ingestion worker ─────────────────────────────────────────────────────
-    let ingest_tx = if config.ingest_enabled() {
-        info!("ingestion enabled; starting worker");
-        Some(start_ingest_worker(config.clone()))
-    } else {
-        info!("ingestion disabled");
-        None
-    };
+    // Always start the ingestion worker (no runtime gating).
+    info!("starting ingestion worker (always enabled)");
+    let ingest_tx = Some(start_ingest_worker(config.clone()));
 
     // ── Thread: blocking stdin → async channel (forward) + ingestion (input)
     let stdin_tx2 = stdin_tx.clone();
     let ingest_tx2 = ingest_tx.clone();
-    let session_id_for_stdin = session_id.clone();
+    let _session_id_for_stdin = session_id.clone();
     std::thread::spawn(move || {
         let mut stdin = io::stdin();
         let mut buf = [0u8; 4096];
         let mut parser = Parser::new();
+        let mut partial = String::new();
         loop {
             match stdin.read(&mut buf) {
                 Ok(0) => break,
@@ -152,16 +150,27 @@ async fn main() -> anyhow::Result<()> {
                         }
                     });
 
-                    let trimmed = plain.trim().to_string();
-                    if !trimmed.is_empty() {
-                        if let Some(ref tx) = ingest_tx2 {
-                            let chunk = crate::ingest::SanitizedChunk {
-                                session_id: session_id_for_stdin.clone(),
-                                ts: crate::ingest::now_millis(),
-                                text: trimmed,
-                                direction: "input".to_string(),
-                            };
-                            let _ = tx.blocking_send(chunk);
+                    // Accumulate partial input and flush on newline or if large
+                    partial.push_str(&plain);
+                    while let Some(pos) = partial.find('\n') {
+                        let line = partial.drain(..=pos).collect::<String>();
+                        let trimmed = line.trim().to_string();
+                        if !trimmed.is_empty() {
+                            if let Some(ref tx) = ingest_tx2 {
+                                let chunk = crate::ingest::SanitizedChunk { text: trimmed };
+                                let _ = tx.blocking_send(chunk);
+                            }
+                        }
+                    }
+                    // If partial grows too large without newline, flush it as a chunk
+                    if partial.len() > 256 {
+                        let flushed = partial.split_off(0);
+                        let trimmed = flushed.trim().to_string();
+                        if !trimmed.is_empty() {
+                            if let Some(ref tx) = ingest_tx2 {
+                                let chunk = crate::ingest::SanitizedChunk { text: trimmed };
+                                let _ = tx.blocking_send(chunk);
+                            }
                         }
                     }
 
@@ -175,13 +184,22 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        // flush any remaining partial on exit
+        if !partial.trim().is_empty() {
+            if let Some(ref tx) = ingest_tx2 {
+                let chunk = crate::ingest::SanitizedChunk { text: partial.trim().to_string() };
+                let _ = tx.blocking_send(chunk);
+            }
+        }
     });
 
     // ── Thread: blocking pty reader → async channel ───────────────────────
-    let session_id_for_pty = session_id.clone();
+    let _session_id_for_pty = session_id.clone();
+    let ingest_tx_for_pty = ingest_tx.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
         let mut parser = Parser::new();
+        let mut partial = String::new();
         loop {
             match pty_reader.read(&mut buf) {
                 Ok(0) => break,
@@ -205,18 +223,26 @@ async fn main() -> anyhow::Result<()> {
                         debug!("vt action: {:?}", action);
                     });
 
-                    // Push plain text to ingest worker if enabled.
-                    let trimmed = plain.trim().to_string();
-                    if !trimmed.is_empty() {
-                        if let Some(ref tx) = ingest_tx {
-                            let chunk = SanitizedChunk {
-                                session_id: session_id_for_pty.clone(),
-                                ts: now_millis(),
-                                text: trimmed,
-                                direction: "output".to_string(),
-                            };
-                            // Best-effort; drop if channel is full.
-                            let _ = tx.blocking_send(chunk);
+                    // Accumulate and flush on newline or size threshold
+                    partial.push_str(&plain);
+                    while let Some(pos) = partial.find('\n') {
+                        let line = partial.drain(..=pos).collect::<String>();
+                        let trimmed = line.trim().to_string();
+                        if !trimmed.is_empty() {
+                            if let Some(ref tx) = ingest_tx_for_pty {
+                                let chunk = crate::ingest::SanitizedChunk { text: trimmed };
+                                let _ = tx.blocking_send(chunk);
+                            }
+                        }
+                    }
+                    if partial.len() > 4096 {
+                        let flushed = partial.split_off(0);
+                        let trimmed = flushed.trim().to_string();
+                        if !trimmed.is_empty() {
+                            if let Some(ref tx) = ingest_tx_for_pty {
+                                let chunk = crate::ingest::SanitizedChunk { text: trimmed };
+                                let _ = tx.blocking_send(chunk);
+                            }
                         }
                     }
 
@@ -230,11 +256,18 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        if !partial.trim().is_empty() {
+            if let Some(ref tx) = ingest_tx_for_pty {
+                let chunk = crate::ingest::SanitizedChunk { text: partial.trim().to_string() };
+                let _ = tx.blocking_send(chunk);
+            }
+        }
     });
 
-    // ── Task: stdin channel → pty writer ─────────────────────────────────
-    let mut pty_writer_owned = pty_writer;
+    // No aggregator: stdin and stdout lines are sent to ingest separately.
+
     tokio::spawn(async move {
+        let mut pty_writer_owned = pty_writer;
         while let Some(data) = stdin_rx.recv().await {
             if let Err(e) = pty_writer_owned.write_all(&data) {
                 error!("pty write error: {}", e);

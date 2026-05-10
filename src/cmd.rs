@@ -3,6 +3,7 @@ use crate::context::AppContext;
 /// Parsed command actions from a `/aura` command line.
 pub enum CmdAction {
     Status,
+    Help(String),
     Unknown(String),
 }
 
@@ -12,6 +13,9 @@ pub fn parse_command(line: &str) -> CmdAction {
     let s = line.trim();
     if s == "status" {
         CmdAction::Status
+    } else if s.starts_with("help ") {
+        let rest = s[5..].trim().to_string();
+        CmdAction::Help(rest)
     } else {
         CmdAction::Unknown(s.to_string())
     }

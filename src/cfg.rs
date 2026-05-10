@@ -5,10 +5,8 @@ use std::path::Path;
 #[derive(Deserialize, Debug, Default, Clone)]
 pub struct Config {
     pub logging: Option<bool>,
-    pub ingest_enable: Option<bool>,
     pub embedding_model: Option<String>,
     pub ollama_base_url: Option<String>,
-    pub sqlite_path: Option<String>,
     pub embedding_dims: Option<u32>,
 }
 
@@ -19,14 +17,6 @@ impl Config {
             return matches!(v.as_str(), "1" | "true" | "yes");
         }
         self.logging.unwrap_or(false)
-    }
-
-    pub fn ingest_enabled(&self) -> bool {
-        if let Ok(v) = std::env::var("AURA_INGEST_ENABLE") {
-            let v = v.to_lowercase();
-            return matches!(v.as_str(), "1" | "true" | "yes");
-        }
-        self.ingest_enable.unwrap_or(true)
     }
 
     pub fn embedding_model(&self) -> String {
@@ -47,14 +37,7 @@ impl Config {
             .unwrap_or_else(|| "http://localhost:11434".to_string())
     }
 
-    pub fn sqlite_path(&self) -> String {
-        if let Ok(v) = std::env::var("AURA_SQLITE_PATH") {
-            return v;
-        }
-        self.sqlite_path
-            .clone()
-            .unwrap_or_else(|| "./aura.db".to_string())
-    }
+    // sqlite_path removed: we no longer persist to SQLite in ephemeral mode.
 
     pub fn embedding_dims(&self) -> u32 {
         if let Ok(v) = std::env::var("AURA_EMBEDDING_DIMS") {
@@ -63,6 +46,13 @@ impl Config {
             }
         }
         self.embedding_dims.unwrap_or(768)
+    }
+
+    pub fn completion_model(&self) -> String {
+        if let Ok(v) = std::env::var("AURA_COMPLETION_MODEL") {
+            return v;
+        }
+        "llama3".to_string()
     }
 }
 

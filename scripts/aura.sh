@@ -13,6 +13,20 @@ MODEL_VOLUME="${MODEL_VOLUME:-$HOME/.ollama}"
 OLLAMA_PORT="${OLLAMA_PORT:-11434}"
 
 started_by_script=false
+INSTALL_MODE=false
+
+# Simple arg parsing: only support --install for now
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --install)
+      INSTALL_MODE=true
+      shift
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
 
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
@@ -104,19 +118,56 @@ for i in $(seq 1 30); do
   fi
 done
 
-# Ensure the embedding model is available in Ollama
-echo "Checking for nomic-embed-text model..."
-if ! curl -sSf "http://localhost:${OLLAMA_PORT}/api/models" 2>/dev/null | grep -q 'nomic-embed-text'; then
-  echo "nomic-embed-text not found. Attempting to pull the model..."
-  if command_exists ollama; then
-    ollama pull nomic-embed-text || true
-  elif docker ps --format '{{.Names}}' | grep -q "^${OLLAMA_CONTAINER}$"; then
-    docker exec "${OLLAMA_CONTAINER}" ollama pull nomic-embed-text || true
+# Optionally ensure the embedding model is available in Ollama (only in install mode)
+if [ "$INSTALL_MODE" = true ]; then
+  echo "Checking for nomic-embed-text model..."
+  if ! curl -sSf "http://localhost:${OLLAMA_PORT}/api/models" 2>/dev/null | grep -q 'nomic-embed-text'; then
+    echo "nomic-embed-text not found. Attempting to pull the model..."
+    if command_exists ollama; then
+      ollama pull nomic-embed-text || true
+    elif docker ps --format '{{.Names}}' | grep -q "^${OLLAMA_CONTAINER}$"; then
+      docker exec "${OLLAMA_CONTAINER}" ollama pull nomic-embed-text || true
+    else
+      echo "Could not pull model: no local ollama CLI and container not running." >&2
+    fi
   else
-    echo "Could not pull model: no local ollama CLI and container not running." >&2
+    echo "nomic-embed-text model already present."
   fi
 else
-  echo "nomic-embed-text model already present."
+  echo "Install mode not enabled; skipping upfront model pull check. Use --install to pull models if needed."
+fi
+
+# Helper: ensure a named model is present in Ollama (checks env overrides)
+pull_model() {
+  local model="$1"
+  if [ -z "$model" ]; then
+    return 0
+  fi
+  echo "Checking for model '${model}'..."
+  if curl -sSf "http://localhost:${OLLAMA_PORT}/api/models" 2>/dev/null | grep -q "${model}"; then
+    echo "${model} already present."
+    return 0
+  fi
+  echo "${model} not found. Attempting to pull..."
+  if command_exists ollama; then
+    ollama pull "${model}" || echo "ollama pull failed for ${model}" >&2
+  elif docker ps --format '{{.Names}}' | grep -q "^${OLLAMA_CONTAINER}$"; then
+    docker exec "${OLLAMA_CONTAINER}" ollama pull "${model}" || echo "container ollama pull failed for ${model}" >&2
+  else
+    echo "Could not pull model ${model}: no local ollama CLI and container not running." >&2
+  fi
+}
+
+# Pull configured embedding and completion models if missing (env override supported)
+EMBEDDING_MODEL="${AURA_EMBEDDING_MODEL:-nomic-embed-text}"
+COMPLETION_MODEL="${AURA_COMPLETION_MODEL:-llama3}"
+if [ "$INSTALL_MODE" = true ]; then
+  pull_model "${EMBEDDING_MODEL}"
+  pull_model "${COMPLETION_MODEL}"
+  echo "Install mode complete: Docker and models are set up. Exiting as requested.";
+  exit 0
+else
+  echo "Install mode not enabled; skipping model pulls. If models are missing the runtime may error or request you to pull them."
 fi
 
 # Add target/debug to PATH so aura-cli is available

@@ -1,64 +1,77 @@
 use anyhow::Result;
 use rig::Embed;
-use rig_sqlite::{Column, ColumnValue, SqliteVectorStore, SqliteVectorStoreTable};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info, warn};
+use once_cell::sync::OnceCell;
 
 use crate::cfg::Config;
 
 /// A sanitized text chunk produced from PTY input or PTY output.
 #[derive(Debug, Clone)]
 pub struct SanitizedChunk {
-    pub session_id: String,
-    pub ts: i64,
     pub text: String,
-    /// "input" for user stdin, "output" for PTY stdout
-    pub direction: String,
 }
 
-/// The document type stored in the SQLite vector store.
+/// The document type stored in the in-memory vector store.
 #[derive(Embed, Clone, Debug, Deserialize, Serialize)]
-struct TerminalChunkDoc {
-    id: String,
-    session_id: String,
-    ts: i64,
-    direction: String,
+pub struct TerminalChunkDoc {
     #[embed]
-    content: String,
+    pub content: String,
 }
 
-impl SqliteVectorStoreTable for TerminalChunkDoc {
-    fn name() -> &'static str {
-        "terminal_chunks"
+// --- In-memory vector store (ephemeral) -------------------------------------------------
+pub struct StoredChunk {
+    pub id: String,
+    pub embedding: Vec<f32>,
+    pub content: String,
+}
+
+pub struct InMemoryStore {
+    items: Vec<StoredChunk>,
+}
+
+impl InMemoryStore {
+    pub fn new() -> Self {
+        Self { items: Vec::new() }
     }
 
-    fn schema() -> Vec<Column> {
-        vec![
-            Column::new("id", "TEXT PRIMARY KEY"),
-            Column::new("session_id", "TEXT"),
-               Column::new("direction", "TEXT"),
-               Column::new("ts", "INTEGER"),
-               Column::new("content", "TEXT"),
-        ]
+    pub async fn add_batch(&mut self, docs: Vec<(String, Vec<f32>, String)>) {
+        for (id, emb, content) in docs {
+            self.items.push(StoredChunk { id, embedding: emb, content });
+        }
     }
 
-    fn id(&self) -> String {
-        self.id.clone()
-    }
-
-    fn column_values(&self) -> Vec<(&'static str, Box<dyn ColumnValue>)> {
-        vec![
-            ("id", Box::new(self.id.clone())),
-            ("session_id", Box::new(self.session_id.clone())),
-               ("direction", Box::new(self.direction.clone())),
-               ("ts", Box::new(self.ts.to_string())),
-               ("content", Box::new(self.content.clone())),
-        ]
+    pub fn top_k(&self, q_emb: &[f32], k: usize) -> Vec<(String, f32, String)> {
+        let q_norm = norm(q_emb).max(1e-6);
+        let mut scores: Vec<(String, f32, String)> = self.items.iter()
+            .map(|it| {
+                let s = dot(q_emb, &it.embedding) / (q_norm * norm(&it.embedding).max(1e-6));
+                (it.id.clone(), s, it.content.clone())
+            }).collect();
+        scores.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        if scores.len() > k { scores.truncate(k); }
+        scores
     }
 }
+
+fn dot(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b.iter()).map(|(x,y)| x * y).sum()
+}
+fn norm(a: &[f32]) -> f32 { dot(a,a).sqrt() }
+
+static GLOBAL_STORE: OnceCell<Arc<RwLock<InMemoryStore>>> = OnceCell::new();
+
+pub fn init_global_store() {
+    GLOBAL_STORE.get_or_init(|| Arc::new(RwLock::new(InMemoryStore::new())));
+}
+
+pub fn global_store() -> Arc<RwLock<InMemoryStore>> {
+    GLOBAL_STORE.get().expect("global store not initialized").clone()
+}
+// ---------------------------------------------------------------------------------------
 
 /// Start the background ingestion worker.
 /// Returns a sender; the caller pushes `SanitizedChunk`s onto it.
@@ -118,13 +131,9 @@ async fn embed_and_store(cfg: &Config, batch: Vec<SanitizedChunk>) -> Result<()>
     use rig::client::{EmbeddingsClient, Nothing};
     use rig::embeddings::EmbeddingsBuilder;
     use rig::providers::ollama;
-    use tokio_rusqlite::ffi::sqlite3_auto_extension;
-    use sqlite_vec::sqlite3_vec_init;
-    use tokio_rusqlite::Connection;
 
     let model_name = cfg.embedding_model();
     let base_url = cfg.ollama_base_url();
-    let sqlite_path = cfg.sqlite_path();
     let dims = cfg.embedding_dims();
 
     // Build Ollama client (Nothing = no API key needed for local Ollama).
@@ -136,43 +145,84 @@ async fn embed_and_store(cfg: &Config, batch: Vec<SanitizedChunk>) -> Result<()>
 
     let model = client.embedding_model_with_ndims(&model_name, dims as usize);
 
-    // Convert batch into TerminalChunkDoc instances.
+    // Convert batch into TerminalChunkDoc instances (store only content for embedding).
+    fn looks_like_prompt(s: &str) -> bool {
+        let t = s.trim();
+        if t.is_empty() { return false }
+        // crude heuristic: username@host:path$ or ends with >
+        if (t.ends_with('$') || t.ends_with('>')) && t.contains('@') && t.contains(':') {
+            return true;
+        }
+        false
+    }
+
     let docs: Vec<TerminalChunkDoc> = batch
         .iter()
-        .map(|c| TerminalChunkDoc {
-            id: format!("{}-{}", c.session_id, c.ts),
-            session_id: c.session_id.clone(),
-            ts: c.ts,
-            direction: c.direction.clone(),
-            content: c.text.clone(),
+        .map(|c| TerminalChunkDoc { content: c.text.clone() })
+        .filter(|d| {
+            let t = d.content.trim();
+            if t.is_empty() { return false }
+            if looks_like_prompt(t) { return false }
+            // require at least one printable non-control char
+            if !t.chars().any(|c| !c.is_control()) { return false }
+            true
         })
         .collect();
 
+    if docs.is_empty() {
+        debug!("ingest: no non-empty documents to embed");
+        return Ok(());
+    }
+
+    // Debug: print the documents being embedded
+    eprintln!("=== EMBEDDING DOCUMENTS ({} docs) ===", docs.len());
+    for (i, d) in docs.iter().enumerate() {
+        eprintln!("--- doc[{}] (len={}) ---\n'{}'\n", i, d.content.len(), d.content);
+    }
+    // trailing newline for clarity
+    eprintln!("");
+
     // Build embeddings for all docs.
-    let embeddings: Vec<(TerminalChunkDoc, _)> = EmbeddingsBuilder::new(model.clone())
+    let raw_embeddings = EmbeddingsBuilder::new(model.clone())
         .documents(docs)?
         .build()
         .await
-        .map_err(|e| anyhow::anyhow!("embed: {e}"))
-        .map(|v: Vec<(TerminalChunkDoc, _)>| v)?;
+        .map_err(|e| anyhow::anyhow!("embed: {e}"))?;
+
+    // Convert Rig Embedding (f64) -> Vec<f32> and collect pairs
+    let embeddings: Vec<(TerminalChunkDoc, Vec<f32>)> = raw_embeddings
+        .into_iter()
+        .map(|(doc, emb)| {
+            // emb: OneOrMany<Embedding> - take first embedding and convert f64->f32
+            let e = emb.first();
+            let v: Vec<f32> = e.vec.into_iter().map(|x| x as f32).collect();
+            (doc, v)
+        })
+        .collect();
 
     let n = embeddings.len();
 
-    // Open the SQLite connection with sqlite-vec extension.
-    // Safety: must be called before any connection is opened.
-    unsafe {
-        sqlite3_auto_extension(Some(std::mem::transmute(sqlite3_vec_init as *const ())));
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+    // Initialize global in-memory store (ephemeral)
+    init_global_store();
+
+    // Prepare batch for in-memory store: generate internal ids, keep only content+embedding
+    let mut batch_for_mem: Vec<(String, Vec<f32>, String)> = Vec::with_capacity(embeddings.len());
+    for (doc, emb) in embeddings {
+        let emb_vec: Vec<f32> = emb;
+        let id = format!("{}-{}", now_millis(), ID_COUNTER.fetch_add(1, Ordering::SeqCst));
+        batch_for_mem.push((id, emb_vec, doc.content.clone()));
     }
 
-    let conn = Connection::open(&sqlite_path).await?;
+    let store = global_store();
+    {
+        let mut w = store.write().await;
+        w.add_batch(batch_for_mem).await;
+    }
 
-    // Create the vector store (creates table if it doesn't exist).
-    let store = SqliteVectorStore::new(conn, &model).await?;
-
-    // Insert the embedded documents.
-    store.add_rows(embeddings).await?;
-
-    info!("ingest: stored {} chunks into SQLite at {}", n, sqlite_path);
+    info!("ingest: stored {} chunks into in-memory store", n);
     Ok(())
 }
 
