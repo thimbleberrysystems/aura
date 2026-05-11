@@ -10,14 +10,12 @@ use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 use aura::cfg::load_config;
 use aura::compress::pipeline_task;
-use aura::rag::{now_millis, init_global_store};
 use aura::pty::{CapturedCommand, RawGuard, capture_task, current_pty_size};
 use aura::server as cli_server;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = load_config();
-    init_global_store();
 
     let env_filter = if config.logging_enabled() {
         tracing_subscriber::EnvFilter::from_default_env()
@@ -32,7 +30,6 @@ async fn main() -> anyhow::Result<()> {
     if !atty::is(atty::Stream::Stdin) {
         warn!("stdin is not a TTY — raw mode will not be entered");
     }
-    info!("session: {}", now_millis());
 
     // ── Open PTY & spawn shell ────────────────────────────────────────────────
     let pty_system = native_pty_system();
@@ -58,9 +55,8 @@ async fn main() -> anyhow::Result<()> {
     let _raw_guard = RawGuard(raw_mode_active);
 
     // ── Pipeline channels ─────────────────────────────────────────────────────
-    //   capture_task  -->  [CapturedCommand]  -->  pipeline_task
-    //                                               |
-    //   (both)        -->  [Vec<u8>]          -->  display_task  -->  stdout
+    //   Stage 1: capture_task  →[CapturedCommand]→  Stage 2: pipeline_task
+    //   Both stages             →[Vec<u8>]→          Stage 3: display → stdout
     let (display_tx, mut display_rx) = mpsc::channel::<Vec<u8>>(128);
     let (cmd_tx, cmd_rx) = mpsc::channel::<CapturedCommand>(16);
 
@@ -89,7 +85,7 @@ async fn main() -> anyhow::Result<()> {
         Duration::from_millis(200),
     ));
 
-    // ── Stage 2: RAG query → summarize → RAG store ────────────────────────────
+    // ── Stage 2: summarize ────────────────────────────────────────────────────
     tokio::spawn(pipeline_task(config, cmd_rx, display_tx));
 
     // ── Stage 3: display ──────────────────────────────────────────────────────
