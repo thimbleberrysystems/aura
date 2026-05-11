@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::io::Result as IoResult;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};

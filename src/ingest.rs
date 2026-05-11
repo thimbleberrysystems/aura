@@ -1,28 +1,12 @@
 use anyhow::Result;
-use rig::Embed;
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::sync::{mpsc, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 use once_cell::sync::OnceCell;
 
-use crate::cfg::Config;
-
-/// A sanitized text chunk produced from PTY input or PTY output.
-#[derive(Debug, Clone)]
-pub struct SanitizedChunk {
-    pub text: String,
-}
-
-/// The document type stored in the in-memory vector store.
-#[derive(Embed, Clone, Debug, Deserialize, Serialize)]
-pub struct TerminalChunkDoc {
-    #[embed]
-    pub content: String,
-}
-
 // --- In-memory vector store (ephemeral) -------------------------------------------------
+
 pub struct StoredChunk {
     pub id: String,
     pub embedding: Vec<f32>,
@@ -50,17 +34,16 @@ impl InMemoryStore {
             .map(|it| {
                 let s = dot(q_emb, &it.embedding) / (q_norm * norm(&it.embedding).max(1e-6));
                 (it.id.clone(), s, it.content.clone())
-            }).collect();
+            })
+            .collect();
         scores.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         if scores.len() > k { scores.truncate(k); }
         scores
     }
 }
 
-fn dot(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b.iter()).map(|(x,y)| x * y).sum()
-}
-fn norm(a: &[f32]) -> f32 { dot(a,a).sqrt() }
+fn dot(a: &[f32], b: &[f32]) -> f32 { a.iter().zip(b.iter()).map(|(x, y)| x * y).sum() }
+fn norm(a: &[f32]) -> f32 { dot(a, a).sqrt() }
 
 static GLOBAL_STORE: OnceCell<Arc<RwLock<InMemoryStore>>> = OnceCell::new();
 
@@ -72,14 +55,12 @@ pub fn global_store() -> Arc<RwLock<InMemoryStore>> {
     GLOBAL_STORE.get().expect("global store not initialized").clone()
 }
 
-/// Embed a single string by calling Ollama's /api/embeddings endpoint directly.
-/// This avoids rig's EmbeddingsBuilder/dimension-validation issues entirely.
-/// Works with any Ollama model (nomic-embed-text, llama3, etc.) — dimensions
-/// are determined by what Ollama returns, not configured statically.
+// --- Core embedding & storage -----------------------------------------------------------
+
+/// Embed a string via Ollama's /api/embeddings endpoint.
 pub async fn embed_text(base_url: &str, model: &str, text: &str) -> Result<Vec<f32>> {
     let url = format!("{}/api/embeddings", base_url.trim_end_matches('/'));
-    let client = reqwest::Client::new();
-    let resp: serde_json::Value = client
+    let resp: serde_json::Value = reqwest::Client::new()
         .post(&url)
         .json(&serde_json::json!({ "model": model, "prompt": text }))
         .send()
@@ -91,12 +72,14 @@ pub async fn embed_text(base_url: &str, model: &str, text: &str) -> Result<Vec<f
 
     let arr = resp["embedding"]
         .as_array()
-        .ok_or_else(|| anyhow::anyhow!("Ollama /api/embeddings returned no 'embedding' field — is the model '{}' pulled?", model))?;
+        .ok_or_else(|| anyhow::anyhow!(
+            "Ollama /api/embeddings returned no 'embedding' field — is model '{}' pulled?", model
+        ))?;
 
-    Ok(arr.iter().map(|v: &serde_json::Value| v.as_f64().unwrap_or(0.0) as f32).collect())
+    Ok(arr.iter().map(|v| v.as_f64().unwrap_or(0.0) as f32).collect())
 }
 
-/// Embed `text` and store it in the global in-memory vector store.
+/// Embed `text` and persist it to the global in-memory store.
 pub async fn store_text(base_url: &str, model: &str, text: &str) -> Result<()> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static STORE_ID: AtomicU64 = AtomicU64::new(1);
@@ -104,168 +87,41 @@ pub async fn store_text(base_url: &str, model: &str, text: &str) -> Result<()> {
     init_global_store();
     let emb = embed_text(base_url, model, text).await?;
     let id = format!("{}-{}", now_millis(), STORE_ID.fetch_add(1, Ordering::SeqCst));
-    let store = global_store();
-    let mut w = store.write().await;
-    w.add_batch(vec![(id, emb, text.to_string())]).await;
+    global_store().write().await.add_batch(vec![(id, emb, text.to_string())]).await;
     info!("rag: stored chunk (len={})", text.len());
     Ok(())
 }
-// ---------------------------------------------------------------------------------------
 
-/// Start the background ingestion worker.
-/// Returns a sender; the caller pushes `SanitizedChunk`s onto it.
-pub fn start_ingest_worker(cfg: Config) -> mpsc::Sender<SanitizedChunk> {
-    let (tx, rx) = mpsc::channel::<SanitizedChunk>(1024);
-    let cfg = Arc::new(cfg);
-    tokio::spawn(run_worker(rx, cfg));
-    tx
-}
+// --- Pipeline-facing API ----------------------------------------------------------------
 
-async fn run_worker(mut rx: mpsc::Receiver<SanitizedChunk>, cfg: Arc<Config>) {
-    let max_batch = 32usize;
-    let max_wait = Duration::from_millis(500);
-
-    loop {
-        let first = match rx.recv().await {
-            Some(c) => c,
-            None => {
-                info!("ingest channel closed; worker exiting");
-                return;
-            }
-        };
-
-        let mut batch = Vec::with_capacity(max_batch);
-        batch.push(first);
-
-        let deadline = tokio::time::Instant::now() + max_wait;
-        loop {
-            if batch.len() >= max_batch {
-                break;
-            }
-            match tokio::time::timeout_at(deadline, rx.recv()).await {
-                Ok(Some(chunk)) => batch.push(chunk),
-                Ok(None) => {
-                    process_batch(&cfg, batch).await;
-                    return;
-                }
-                Err(_) => break,
-            }
+/// Query the RAG store: embed the query and return the top-k matching contents.
+pub async fn rag_query(base_url: &str, model: &str, cmd: &str, clean: &str) -> Vec<String> {
+    let q = format!("Command: {}\n{}", cmd, &clean[..clean.len().min(512)]);
+    match embed_text(base_url, model, &q).await {
+        Ok(emb) => {
+            let store = global_store();
+            let r = store.read().await;
+            let hits = r.top_k(&emb, 3);
+            debug!("rag: top_k returned {} hits", hits.len());
+            hits.into_iter().map(|(_, _, c)| c).collect()
         }
-
-        process_batch(&cfg, batch).await;
-    }
-}
-
-async fn process_batch(cfg: &Config, batch: Vec<SanitizedChunk>) {
-    if batch.is_empty() {
-        return;
-    }
-    debug!("ingest: processing batch of {} chunks", batch.len());
-    if let Err(e) = embed_and_store(cfg, batch).await {
-        warn!("ingest: embed_and_store error: {:#}", e);
-    }
-}
-
-async fn embed_and_store(cfg: &Config, batch: Vec<SanitizedChunk>) -> Result<()> {
-    use rig::client::{EmbeddingsClient, Nothing};
-    use rig::embeddings::EmbeddingsBuilder;
-    use rig::providers::ollama;
-
-    let model_name = cfg.embedding_model();
-    let base_url = cfg.ollama_base_url();
-    let dims = cfg.embedding_dims();
-
-    // Build Ollama client (Nothing = no API key needed for local Ollama).
-    let client = ollama::Client::builder()
-        .api_key(Nothing)
-        .base_url(&base_url)
-        .build()
-        .map_err(|e| anyhow::anyhow!("ollama client: {e}"))?;
-
-    let model = client.embedding_model_with_ndims(&model_name, dims as usize);
-
-    // Convert batch into TerminalChunkDoc instances (store only content for embedding).
-    fn looks_like_prompt(s: &str) -> bool {
-        let t = s.trim();
-        if t.is_empty() { return false }
-        // crude heuristic: username@host:path$ or ends with >
-        if (t.ends_with('$') || t.ends_with('>')) && t.contains('@') && t.contains(':') {
-            return true;
+        Err(e) => {
+            warn!("rag: query failed: {:#}", e);
+            vec![]
         }
-        false
     }
-
-    let docs: Vec<TerminalChunkDoc> = batch
-        .iter()
-        .map(|c| TerminalChunkDoc { content: c.text.clone() })
-        .filter(|d| {
-            let t = d.content.trim();
-            if t.is_empty() { return false }
-            if looks_like_prompt(t) { return false }
-            // require at least one printable non-control char
-            if !t.chars().any(|c| !c.is_control()) { return false }
-            true
-        })
-        .collect();
-
-    if docs.is_empty() {
-        debug!("ingest: no non-empty documents to embed");
-        return Ok(());
-    }
-
-    // Debug: print the documents being embedded
-    eprintln!("=== EMBEDDING DOCUMENTS ({} docs) ===", docs.len());
-    for (i, d) in docs.iter().enumerate() {
-        eprintln!("--- doc[{}] (len={}) ---\n'{}'\n", i, d.content.len(), d.content);
-    }
-    // trailing newline for clarity
-    eprintln!("");
-
-    // Build embeddings for all docs.
-    let raw_embeddings = EmbeddingsBuilder::new(model.clone())
-        .documents(docs)?
-        .build()
-        .await
-        .map_err(|e| anyhow::anyhow!("embed: {e}"))?;
-
-    // Convert Rig Embedding (f64) -> Vec<f32> and collect pairs
-    let embeddings: Vec<(TerminalChunkDoc, Vec<f32>)> = raw_embeddings
-        .into_iter()
-        .map(|(doc, emb)| {
-            // emb: OneOrMany<Embedding> - take first embedding and convert f64->f32
-            let e = emb.first();
-            let v: Vec<f32> = e.vec.into_iter().map(|x| x as f32).collect();
-            (doc, v)
-        })
-        .collect();
-
-    let n = embeddings.len();
-
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static ID_COUNTER: AtomicU64 = AtomicU64::new(1);
-
-    // Initialize global in-memory store (ephemeral)
-    init_global_store();
-
-    // Prepare batch for in-memory store: generate internal ids, keep only content+embedding
-    let mut batch_for_mem: Vec<(String, Vec<f32>, String)> = Vec::with_capacity(embeddings.len());
-    for (doc, emb) in embeddings {
-        let emb_vec: Vec<f32> = emb;
-        let id = format!("{}-{}", now_millis(), ID_COUNTER.fetch_add(1, Ordering::SeqCst));
-        batch_for_mem.push((id, emb_vec, doc.content.clone()));
-    }
-
-    let store = global_store();
-    {
-        let mut w = store.write().await;
-        w.add_batch(batch_for_mem).await;
-    }
-
-    info!("ingest: stored {} chunks into in-memory store", n);
-    Ok(())
 }
 
-/// Build a millisecond-precision Unix timestamp.
+/// Embed `content` and store it in the RAG store (logs warnings on failure).
+pub async fn rag_store(base_url: &str, model: &str, content: &str) {
+    if let Err(e) = store_text(base_url, model, content).await {
+        warn!("rag: store failed: {:#}", e);
+    }
+}
+
+// --- Utilities --------------------------------------------------------------------------
+
+/// Millisecond-precision Unix timestamp.
 pub fn now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
