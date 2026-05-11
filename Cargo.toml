@@ -32,10 +32,4 @@ tonic-build = "0.8"
 [dev-dependencies]
 tempfile = "3"
 
-[[bin]]
-name = "aura-cli"
-path = "src/aura/cli_client.rs"
-
-[[bin]]
-name = "aura"
-path = "src/aura/main.rs"
+ # binaries moved to `src/bin/`; Cargo auto-discovers them

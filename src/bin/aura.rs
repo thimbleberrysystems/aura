@@ -13,15 +13,12 @@ use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
 use termwiz::escape::parser::Parser as VteParser;
 use termwiz::escape::Action;
-mod cfg;
-mod ingest;
-mod cmd;
-mod help;
-mod cli_server;
-
 use tracing::{debug, error, info, warn};
-use crate::cfg::load_config;
-use crate::ingest::{now_millis, init_global_store, global_store, embed_text, store_text};
+use aura::cfg::load_config;
+use aura::ingest::{now_millis, init_global_store, global_store, embed_text, store_text};
+use aura::cmd;
+use aura::help;
+use aura::server as cli_server;
 
 /// Strip ANSI/VT escape sequences using the termwiz parser, returning clean UTF-8 text.
 /// Handles the full escape sequence spec (CSI, OSC, DCS, SS3, etc.) correctly.
