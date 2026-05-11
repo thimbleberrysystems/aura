@@ -17,7 +17,6 @@ use tracing::{debug, error, info, warn};
 use aura::cfg::load_config;
 use aura::ingest::{now_millis, init_global_store, global_store, embed_text, store_text};
 use aura::cmd;
-use aura::help;
 use aura::server as cli_server;
 
 /// Strip ANSI/VT escape sequences using the termwiz parser, returning clean UTF-8 text.

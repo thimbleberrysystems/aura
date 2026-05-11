@@ -107,18 +107,6 @@ where
             w.write_all(st.as_bytes()).await?;
             w.write_all(b"\n").await?;
         }
-        crate::cmd::CmdAction::Help(q) => {
-            match crate::help::handle_help(&q).await {
-                Ok(resp) => {
-                    w.write_all(resp.as_bytes()).await?;
-                    w.write_all(b"\n").await?;
-                }
-                Err(e) => {
-                    let msg = format!("help error: {}\n", e);
-                    w.write_all(msg.as_bytes()).await?;
-                }
-            }
-        }
         crate::cmd::CmdAction::Unknown(u) => {
             let msg = format!("Unknown aura command: {}\n", u);
             w.write_all(msg.as_bytes()).await?;
