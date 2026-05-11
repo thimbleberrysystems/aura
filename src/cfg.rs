@@ -5,7 +5,7 @@ use std::path::Path;
 #[derive(Deserialize, Debug, Default, Clone)]
 pub struct Config {
     pub logging: Option<bool>,
-    pub ollama_base_url: Option<String>,
+    pub model: Option<String>,
 }
 
 impl Config {
@@ -17,20 +17,16 @@ impl Config {
         self.logging.unwrap_or(false)
     }
 
-    pub fn ollama_base_url(&self) -> String {
-        if let Ok(v) = std::env::var("AURA_OLLAMA_BASE_URL") {
+    /// The model string passed to genai. genai infers the provider automatically.
+    /// e.g. "llama3.2" → Ollama, "gpt-4o" → OpenAI, "claude-3-5-sonnet" → Anthropic.
+    /// Override with AURA_MODEL env var or set `model` in config/aura.toml.
+    pub fn model(&self) -> String {
+        if let Ok(v) = std::env::var("AURA_MODEL") {
             return v;
         }
-        self.ollama_base_url
+        self.model
             .clone()
-            .unwrap_or_else(|| "http://localhost:11434".to_string())
-    }
-
-    pub fn completion_model(&self) -> String {
-        if let Ok(v) = std::env::var("AURA_COMPLETION_MODEL") {
-            return v;
-        }
-        "llama3".to_string()
+            .unwrap_or_else(|| "llama3.2".to_string())
     }
 
     /// If `AURA_DISABLE_SUMMARY` is set (1/true/yes), disable summarization.
@@ -52,8 +48,8 @@ impl Config {
         250
     }
 
-    /// Timeout in seconds for the Ollama summarize call.
-    /// Default: 30. Override with AURA_SUMMARIZE_TIMEOUT_SECS.
+    /// Timeout in seconds for the model summarize call.
+    /// Default: 3000. Override with AURA_SUMMARIZE_TIMEOUT_SECS.
     pub fn summarize_timeout_secs(&self) -> u64 {
         if let Ok(v) = std::env::var("AURA_SUMMARIZE_TIMEOUT_SECS") {
             if let Ok(n) = v.parse::<u64>() { return n; }

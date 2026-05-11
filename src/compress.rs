@@ -1,13 +1,12 @@
 use std::time::Duration;
-use rig::providers::ollama;
-use rig::client::{Nothing, CompletionClient as _};
-use rig::completion::Prompt;
+use genai::Client;
+use genai::chat::ChatRequest;
 use tokio::sync::mpsc;
 use crate::cfg::Config;
 use crate::pty::{CapturedCommand, strip_ansi};
 
 /// Stage 2 of the pipeline: for each captured command, runs:
-///   strip ANSI -> threshold check -> Ollama summarize (with timeout) -> display
+///   strip ANSI -> threshold check -> model summarize (with timeout) -> display
 ///
 /// One tokio task is spawned per command so commands are processed concurrently.
 pub async fn pipeline_task(
@@ -26,15 +25,14 @@ async fn process_command(config: Config, cap: CapturedCommand, display_tx: mpsc:
     let clean = strip_ansi(&cap.bytes);
     let threshold = config.summarize_threshold();
     let disabled = config.disable_summary();
-    let ollama_url = config.ollama_base_url();
-    let completion_model = config.completion_model();
+    let model = config.model();
     let timeout = Duration::from_secs(config.summarize_timeout_secs());
 
     let display_bytes = if disabled || clean.len() < threshold {
         // Short output or summaries disabled — display as-is.
         cap.bytes.clone()
     } else {
-        match tokio::time::timeout(timeout, call_ollama_summarize(&ollama_url, &completion_model, &cap.cmd, &clean)).await {
+        match tokio::time::timeout(timeout, call_semantic_compressor(&model, &cap.cmd, &clean)).await {
             Ok(Ok(summary)) if is_useful(&summary, &clean) => {
                 let normalised = summary.trim_end().replace('\n', "\r\n");
                 let mut out = b"\r\n[AURA] summarized (export AURA_DISABLE_SUMMARY=1 to disable)\r\n".to_vec();
@@ -72,18 +70,15 @@ fn is_useful(summary: &str, original: &str) -> bool {
         && summary.len() < original.len()
 }
 
-/// Call Ollama to summarize command output. Returns the model reply or an error.
-pub async fn call_ollama_summarize(
-    base_url: &str,
+/// Distill terminal output using the configured model.
+/// The model string (e.g. "llama3.2", "gpt-4o") is all genai needs — it infers
+/// the provider and auth automatically.
+async fn call_semantic_compressor(
     model: &str,
     cmd: &str,
     clean_output: &str,
 ) -> anyhow::Result<String> {
-    let client = ollama::Client::builder()
-        .api_key(Nothing)
-        .base_url(base_url)
-        .build()?;
-    let agent = client.agent(model).build();
+    let client = Client::default();
     let prompt = format!(
         "Distill this terminal output for another LLM.\n\
 Discard: progress bars, UI noise, ANSI codes, and repetitive in-progress logs.\n\
@@ -99,5 +94,6 @@ Command: {cmd}\n\
         cmd = cmd,
         clean_output = clean_output,
     );
-    Ok(agent.prompt(&prompt).await?)
+    let response = client.exec_chat(model, ChatRequest::from_user(prompt), None).await?;
+    Ok(response.into_first_text().unwrap_or_default())
 }
