@@ -1,5 +1,5 @@
 use anyhow::Context;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size as terminal_size};
+use crossterm::terminal::enable_raw_mode;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use rig::providers::ollama;
 use rig::client::{Nothing, CompletionClient as _};
@@ -11,109 +11,15 @@ use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
-use termwiz::escape::parser::Parser as VteParser;
-use termwiz::escape::Action;
+use aura::pty::{Mode, CommandState, RawGuard, current_pty_size, strip_ansi};
+use aura::compress::call_ollama_summarize;
 use tracing::{debug, error, info, warn};
 use aura::cfg::load_config;
 use aura::ingest::{now_millis, init_global_store, global_store, embed_text, store_text};
 use aura::cmd;
 use aura::server as cli_server;
 
-/// Strip ANSI/VT escape sequences using the termwiz parser, returning clean UTF-8 text.
-/// Handles the full escape sequence spec (CSI, OSC, DCS, SS3, etc.) correctly.
-fn strip_ansi(bytes: &[u8]) -> String {
-    let mut parser = VteParser::new();
-    let mut text = String::new();
-    parser.parse(bytes, |action| match action {
-        Action::Print(c) => text.push(c),
-        Action::PrintString(s) => text.push_str(&s),
-        _ => {}
-    });
-    text
-}
-
-// preamble stripping removed: enforced via prompt instruction instead
-
-/// Call Ollama to summarize command output.  Returns the model's reply or an error.
-/// `context_chunks` are semantically similar past summaries retrieved from the RAG store.
-async fn call_ollama_summarize(
-    base_url: &str,
-    model: &str,
-    cmd: &str,
-    clean_output: &str,
-    context_chunks: &[String],
-) -> anyhow::Result<String> {
-    let client = ollama::Client::builder()
-        .api_key(Nothing)
-        .base_url(base_url)
-        .build()?;
-    let agent = client.agent(model).build();
-    let context_block = if context_chunks.is_empty() {
-        String::new()
-    } else {
-        let items = context_chunks
-            .iter()
-            .enumerate()
-            .map(|(i, c)| format!("[{}] {}", i + 1, c))
-            .collect::<Vec<_>>()
-            .join("\n---\n");
-        format!("Previous Context (similar past commands, for reference only):\n{}\n\n", items)
-    };
-    debug!("rag: injecting {} context chunks (block len={})", context_chunks.len(), context_block.len());
-    let prompt = format!(
-        r#"Distill this terminal output for another LLM.
-Discard: progress bars, UI noise, ANSI codes, and repetitive 'in-progress' logs.
-Preserve: Error messages, stack traces, exit codes, and unique identifiers (IPs, IDs, paths).
-Constraint: Output ONLY the distilled data. No conversational filler. No leading preamble.
-Goal: Remember, you are a compressor which reduces text size, but still preserves important info. Your output will be read by another LLM, so make it suitable for LLM. No additional or extra info should be added.
-If the output is already concise, return it as-is.
-Optional: If previous context is provided, use it only to understand what details are important. Prioritise the current output. If previous context is not useful, ignore it silently.
-Dont add unnecessary line breaks, and do not add any preamble like "Summary:" or "Distilled output:". Just return the distilled text.
-{context_block}
-Command: {cmd}
-<BEGIN_OUTPUT>
-{clean_output}
-<END_OUTPUT>"#,
-        context_block = context_block,
-        cmd = cmd,
-        clean_output = clean_output
-    );
-    let reply = agent.prompt(&prompt).await?;
-    Ok(reply)
-}
-
-/// Detect the current terminal size (columns x rows).
-fn current_pty_size() -> PtySize {
-    let (cols, rows) = terminal_size().unwrap_or((80, 24));
-    PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }
-}
-
-// ── State machine ─────────────────────────────────────────────────────────────
-//
-//  IDLE ──(stdin newline)──► RUNNING ──(200 ms PTY silence)──► IDLE + emit AURA
-//  IDLE / RUNNING ──(alt-screen on: \x1b[?1049h)──► PASSTHROUGH
-//  PASSTHROUGH ──(alt-screen off: \x1b[?1049l)──► IDLE
-//
-#[derive(Debug, Clone, PartialEq)]
-enum Mode {
-    /// Shell is idle/showing a prompt. PTY output forwarded to terminal as-is.
-    Idle,
-    /// User pressed Enter. PTY output is captured and suppressed from display.
-    Running,
-    /// Full-screen app (vim, less, top…) detected via alternate-screen sequence.
-    /// Everything forwarded raw — no capture, no replacement.
-    Passthrough,
-}
-
-struct CommandState {
-    mode: Mode,
-    /// Set on every PTY byte received while Running.
-    last_pty_activity: Option<Instant>,
-    /// Raw PTY bytes accumulated while Running (command output + trailing prompt).
-    captured: Vec<u8>,
-    /// Printable text typed by the user for the current command (accumulated until newline).
-    pending_cmd: String,
-}
+// PTY types and helpers moved to `aura::pty` (Mode, CommandState, current_pty_size, RawGuard).
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -171,12 +77,6 @@ async fn main() -> anyhow::Result<()> {
         debug!("raw mode enabled");
     }
 
-    struct RawGuard(bool);
-    impl Drop for RawGuard {
-        fn drop(&mut self) {
-            if self.0 { let _ = disable_raw_mode(); }
-        }
-    }
     let _raw_guard = RawGuard(raw_mode_active);
 
     // ── Channels ──────────────────────────────────────────────────────────────
@@ -513,10 +413,6 @@ async fn main() -> anyhow::Result<()> {
     let status = tokio::task::spawn_blocking(move || child.wait()).await??;
     info!("shell exited: {:?}", status);
 
-    if raw_mode_active {
-        disable_raw_mode().context("disable_raw_mode failed")?;
-        debug!("raw mode disabled");
-    }
-
+    
     Ok(())
 }
