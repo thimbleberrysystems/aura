@@ -1,5 +1,3 @@
-use crate::context::AppContext;
-
 /// Parsed command actions from a `/aura` command line.
 pub enum CmdAction {
     Status,
@@ -22,6 +20,6 @@ pub fn parse_command(line: &str) -> CmdAction {
 }
 
 /// Format a human-readable status string for the `status` command.
-pub fn status_string(ctx: &AppContext) -> String {
-    format!("OK uptime={}s", ctx.uptime_seconds())
+pub fn status_string() -> String {
+    "OK".to_string()
 }

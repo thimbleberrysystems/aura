@@ -20,7 +20,6 @@ mod cli_server;
 mod ingest;
 mod help;
 use ingest::{now_millis, init_global_store, global_store, embed_text, store_text};
-use aura::context::AppContext;
 
 /// Strip ANSI/VT escape sequences using the termwiz parser, returning clean UTF-8 text.
 /// Handles the full escape sequence spec (CSI, OSC, DCS, SS3, etc.) correctly.
@@ -188,9 +187,8 @@ async fn main() -> anyhow::Result<()> {
     // bytes to display → stdout writer task  (PTY reader + flusher both send here)
     let (pty_out_tx, mut pty_out_rx) = mpsc::channel::<Vec<u8>>(128);
 
-    // ── App context / control server ──────────────────────────────────────────
-    let app_ctx = Arc::new(AppContext::new());
-    cli_server::start_control_server(Arc::clone(&app_ctx));
+    // ── Control server ──────────────────────────────────────────────────────
+    cli_server::start_control_server();
 
     // ── Shared state ──────────────────────────────────────────────────────────
     let shared = Arc::new(Mutex::new(CommandState {

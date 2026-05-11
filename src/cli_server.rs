@@ -4,33 +4,29 @@ use std::io::Result as IoResult;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
-use aura::context::AppContext;
-
 /// Start the control server in the background. This spawns listeners for TCP
 /// (loopback) and, on Unix, a Unix-domain socket. Each accepted connection is
 /// handled by reading a single command line and writing a single-line reply.
-pub fn start_control_server(app_ctx: Arc<AppContext>) {
+pub fn start_control_server() {
     tokio::spawn(async move {
-        if let Err(e) = run_control_server(app_ctx).await {
+        if let Err(e) = run_control_server().await {
             tracing::error!("control server failed: {}", e);
         }
     });
 }
 
-async fn run_control_server(app_ctx: Arc<AppContext>) -> anyhow::Result<()> {
+async fn run_control_server() -> anyhow::Result<()> {
     // Start TCP loopback listener (portable fallback for Windows)
     let tcp_addr = std::env::var("AURA_CONTROL_TCP").unwrap_or_else(|_| "127.0.0.1:40001".to_string());
     let tcp_listener = TcpListener::bind(&tcp_addr).await?;
     tracing::info!("control: tcp listening on {}", tcp_addr);
 
-    let tcp_ctx = Arc::clone(&app_ctx);
     tokio::spawn(async move {
         loop {
             match tcp_listener.accept().await {
                 Ok((stream, _peer)) => {
-                    let ctx = Arc::clone(&tcp_ctx);
                     tokio::spawn(async move {
-                        if let Err(e) = handle_stream(stream, ctx).await {
+                        if let Err(e) = handle_stream(stream).await {
                             tracing::error!("tcp conn error: {}", e);
                         }
                     });
@@ -68,14 +64,12 @@ async fn run_control_server(app_ctx: Arc<AppContext>) -> anyhow::Result<()> {
         let _ = std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o700));
         tracing::info!("control: unix socket listening on {}", socket_path);
 
-        let uds_ctx = Arc::clone(&app_ctx);
         tokio::spawn(async move {
             loop {
                 match uds_listener.accept().await {
                     Ok((stream, _peer)) => {
-                        let ctx = Arc::clone(&uds_ctx);
                         tokio::spawn(async move {
-                            if let Err(e) = handle_stream(stream, ctx).await {
+                            if let Err(e) = handle_stream(stream).await {
                                 tracing::error!("uds conn error: {}", e);
                             }
                         });
@@ -92,7 +86,7 @@ async fn run_control_server(app_ctx: Arc<AppContext>) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn handle_stream<S>(stream: S, app_ctx: Arc<AppContext>) -> IoResult<()>
+async fn handle_stream<S>(stream: S) -> IoResult<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
@@ -108,7 +102,7 @@ where
 
     match aura::cmd::parse_command(&cmdline) {
         aura::cmd::CmdAction::Status => {
-            let st = aura::cmd::status_string(&app_ctx);
+            let st = aura::cmd::status_string();
             // ensure reply starts at column 0
             w.write_all(st.as_bytes()).await?;
             w.write_all(b"\n").await?;
