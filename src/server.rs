@@ -38,50 +38,6 @@ async fn run_control_server() -> anyhow::Result<()> {
         }
     });
 
-    // Unix-domain socket listener (Unix only)
-    #[cfg(unix)]
-    {
-        use std::path::Path;
-        use std::os::unix::fs::PermissionsExt;
-        use tokio::net::UnixListener;
-
-        let socket_path = std::env::var("AURA_CONTROL_SOCKET").unwrap_or_else(|_| {
-            match std::env::var("XDG_RUNTIME_DIR") {
-                Ok(dir) => format!("{}/aura.sock", dir),
-                Err(_) => "/tmp/aura.sock".to_string(),
-            }
-        });
-
-        if let Some(parent) = Path::new(&socket_path).parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        // remove stale socket
-        let _ = std::fs::remove_file(&socket_path);
-
-        let uds_listener = UnixListener::bind(&socket_path)?;
-        // restrict permissions to user
-        let _ = std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o700));
-        tracing::info!("control: unix socket listening on {}", socket_path);
-
-        tokio::spawn(async move {
-            loop {
-                match uds_listener.accept().await {
-                    Ok((stream, _peer)) => {
-                        tokio::spawn(async move {
-                            if let Err(e) = handle_stream(stream).await {
-                                tracing::error!("uds conn error: {}", e);
-                            }
-                        });
-                    }
-                    Err(e) => {
-                        tracing::error!("uds accept error: {}", e);
-                        break;
-                    }
-                }
-            }
-        });
-    }
-
     Ok(())
 }
 
