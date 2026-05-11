@@ -35,8 +35,7 @@ async fn process_command(config: Config, cap: CapturedCommand, display_tx: mpsc:
         match tokio::time::timeout(timeout, call_semantic_compressor(&model, &cap.cmd, &clean)).await {
             Ok(Ok(summary)) if is_useful(&summary, &clean) => {
                 let normalised = summary.trim_end().replace('\n', "\r\n");
-                let mut out = b"\r\n[AURA] summarized (export AURA_DISABLE_SUMMARY=1 to disable)\r\n".to_vec();
-                out.extend_from_slice(normalised.as_bytes());
+                let mut out = normalised.into_bytes();
                 out.extend_from_slice(b"\r\n");
                 out
             }
