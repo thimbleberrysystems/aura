@@ -34,4 +34,8 @@ tempfile = "3"
 
 [[bin]]
 name = "aura-cli"
-path = "src/cli_client.rs"
+path = "src/aura/cli_client.rs"
+
+[[bin]]
+name = "aura"
+path = "src/aura/main.rs"

@@ -100,14 +100,14 @@ where
     let cmdline = line.trim_end_matches(&['\r', '\n'][..]).to_string();
     tracing::debug!("control: received command='{}'", cmdline);
 
-    match aura::cmd::parse_command(&cmdline) {
-        aura::cmd::CmdAction::Status => {
-            let st = aura::cmd::status_string();
+    match crate::cmd::parse_command(&cmdline) {
+        crate::cmd::CmdAction::Status => {
+            let st = crate::cmd::status_string();
             // ensure reply starts at column 0
             w.write_all(st.as_bytes()).await?;
             w.write_all(b"\n").await?;
         }
-        aura::cmd::CmdAction::Help(q) => {
+        crate::cmd::CmdAction::Help(q) => {
             match crate::help::handle_help(&q).await {
                 Ok(resp) => {
                     w.write_all(resp.as_bytes()).await?;
@@ -119,7 +119,7 @@ where
                 }
             }
         }
-        aura::cmd::CmdAction::Unknown(u) => {
+        crate::cmd::CmdAction::Unknown(u) => {
             let msg = format!("Unknown aura command: {}\n", u);
             w.write_all(msg.as_bytes()).await?;
         }

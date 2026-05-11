@@ -13,13 +13,15 @@ use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
 use termwiz::escape::parser::Parser as VteParser;
 use termwiz::escape::Action;
-use tracing::{debug, error, info, warn};
 mod cfg;
-use crate::cfg::load_config;
-mod cli_server;
 mod ingest;
+mod cmd;
 mod help;
-use ingest::{now_millis, init_global_store, global_store, embed_text, store_text};
+mod cli_server;
+
+use tracing::{debug, error, info, warn};
+use crate::cfg::load_config;
+use crate::ingest::{now_millis, init_global_store, global_store, embed_text, store_text};
 
 /// Strip ANSI/VT escape sequences using the termwiz parser, returning clean UTF-8 text.
 /// Handles the full escape sequence spec (CSI, OSC, DCS, SS3, etc.) correctly.
@@ -502,7 +504,7 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // ── SIGINT passthrough ────────────────────────────────────────────────────
+    // ── SIGINT passthrough ───────────────────────────────────────────────────
     tokio::spawn(async move {
         let mut sigint = signal(SignalKind::interrupt()).expect("SIGINT handler failed");
         loop {
