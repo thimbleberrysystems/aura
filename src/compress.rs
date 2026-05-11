@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use tracing::debug;
 use crate::cfg::Config;
 use crate::pty::{CapturedCommand, strip_ansi};
-use crate::ingest::{rag_query, rag_store};
+use crate::rag::{rag_query, rag_store};
 
 /// Stage 2 of the pipeline: for each captured command, runs:
 ///   RAG query -> Ollama summarize -> display -> RAG store

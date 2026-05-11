@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 use aura::cfg::load_config;
 use aura::compress::pipeline_task;
-use aura::ingest::{now_millis, init_global_store};
+use aura::rag::{now_millis, init_global_store};
 use aura::pty::{CapturedCommand, RawGuard, capture_task, current_pty_size};
 use aura::server as cli_server;
 
