@@ -17,7 +17,7 @@ use aura::server as cli_server;
 async fn main() -> anyhow::Result<()> {
     let config = load_config();
 
-    let env_filter = if config.logging_enabled() {
+    let env_filter = if config.logging_with_source().0 {
         tracing_subscriber::EnvFilter::from_default_env()
     } else {
         tracing_subscriber::EnvFilter::new("warn")

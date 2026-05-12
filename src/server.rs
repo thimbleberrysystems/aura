@@ -24,7 +24,9 @@ where
     W: tokio::io::AsyncWrite + Unpin + Send,
 {
     let (logging_effective, logging_src) = cfg.logging_with_source();
-    let (model_effective, model_src) = cfg.model_with_source();
+    let model_effective = cfg.model_name();
+    let model_endpoint = cfg.model_endpoint().unwrap_or_else(|| "(not set)".to_string());
+    let model_api_key = cfg.model_api_key().map(|_| "(set)".to_string()).unwrap_or_else(|| "(not set)".to_string());
     let (disable_summary_effective, disable_summary_src) = cfg.disable_summary_with_source();
     let (summarize_threshold_effective, summarize_threshold_src) = cfg.summarize_threshold_with_source();
     let (summarize_timeout_effective, summarize_timeout_src) = cfg.summarize_timeout_secs_with_source();
@@ -38,7 +40,9 @@ where
 
     let mut out = String::new();
     out.push_str(&format!("logging: {} ({})\n", logging_effective, src_name(logging_src)));
-    out.push_str(&format!("model: {} ({})\n", model_effective, src_name(model_src)));
+    out.push_str(&format!("model_name: {} (AURA_MODEL_NAME)\n", model_effective));
+    out.push_str(&format!("model_endpoint: {}\n", model_endpoint));
+    out.push_str(&format!("model_api_key: {}\n", model_api_key));
     out.push_str(&format!("disable_summary: {} ({})\n", disable_summary_effective, src_name(disable_summary_src)));
     out.push_str(&format!("summarize_threshold: {} ({})\n", summarize_threshold_effective, src_name(summarize_threshold_src)));
     out.push_str(&format!("summarize_timeout_secs: {} ({})\n", summarize_timeout_effective, src_name(summarize_timeout_src)));

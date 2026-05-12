@@ -5,7 +5,6 @@ use std::path::Path;
 #[derive(Deserialize, Debug, Default, Clone)]
 pub struct Config {
     pub logging: Option<bool>,
-    pub model: Option<String>,
 }
 
 /// Where a configuration value came from.
@@ -20,33 +19,19 @@ pub const DEFAULT_CONTROL_TCP: &str = "127.0.0.1:40001";
 pub const DEFAULT_MODEL_ADDR: &str = "127.0.0.1:11434";
 
 impl Config {
-    pub fn logging_enabled(&self) -> bool {
-        self.logging_with_source().0
+    /// Model name for genai (e.g. "llama3.2", "gpt-4o"). Override with AURA_MODEL_NAME.
+    pub fn model_name(&self) -> String {
+        std::env::var("AURA_MODEL_NAME").unwrap_or_else(|_| "llama3.2".to_string())
     }
 
-    /// The model string passed to genai. genai infers the provider automatically.
-    /// e.g. "llama3.2" → Ollama, "gpt-4o" → OpenAI, "claude-3-5-sonnet" → Anthropic.
-    /// Override with AURA_MODEL env var or set `model` in config/aura.toml.
-    pub fn model(&self) -> String {
-        self.model_with_source().0
+    /// Model endpoint URL. Override with AURA_MODEL_ENDPOINT.
+    pub fn model_endpoint(&self) -> Option<String> {
+        std::env::var("AURA_MODEL_ENDPOINT").ok()
     }
 
-    /// If `AURA_DISABLE_SUMMARY` is set (1/true/yes), disable summarization.
-    pub fn disable_summary(&self) -> bool {
-        self.disable_summary_with_source().0
-    }
-
-    /// Maximum byte length of clean stdout before we bother calling Ollama.
-    /// If the output is shorter than this, we display it as-is.
-    /// Default: 250. Override with AURA_SUMMARIZE_THRESHOLD.
-    pub fn summarize_threshold(&self) -> usize {
-        self.summarize_threshold_with_source().0
-    }
-
-    /// Timeout in seconds for the model summarize call.
-    /// Default: 3000. Override with AURA_SUMMARIZE_TIMEOUT_SECS.
-    pub fn summarize_timeout_secs(&self) -> u64 {
-        self.summarize_timeout_secs_with_source().0
+    /// Model API key. Override with AURA_MODEL_API_KEY.
+    pub fn model_api_key(&self) -> Option<String> {
+        std::env::var("AURA_MODEL_API_KEY").ok()
     }
 
     /// Logging value plus its source.
@@ -64,16 +49,7 @@ impl Config {
         (false, Source::Default)
     }
 
-    /// Model value plus its source.
-    pub fn model_with_source(&self) -> (String, Source) {
-        if let Ok(v) = std::env::var("AURA_MODEL") {
-            return (v, Source::Env);
-        }
-        if let Some(m) = &self.model {
-            return (m.clone(), Source::Config);
-        }
-        ("llama3.2".to_string(), Source::Default)
-    }
+
 
     /// Disable-summary value plus its source.
     pub fn disable_summary_with_source(&self) -> (bool, Source) {
@@ -114,11 +90,6 @@ impl Config {
             return (v, Source::Env);
         }
         (DEFAULT_MODEL_ADDR.to_string(), Source::Default)
-    }
-
-    /// Model server address (host:port) - effective value only.
-    pub fn model_addr(&self) -> String {
-        self.model_addr_with_source().0
     }
 
 }
