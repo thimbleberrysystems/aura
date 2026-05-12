@@ -28,7 +28,7 @@ fn build_client(cfg: ModelConfig) -> Client {
 }
 
 /// Stage 2 of the pipeline: for each captured command, runs:
-///   strip ANSI -> threshold check -> model summarize (with timeout) -> display
+///   strip ANSI -> threshold check -> semantic_compress (LLM, with timeout) -> display
 ///
 /// One tokio task is spawned per command so commands are processed concurrently.
 pub async fn pipeline_task(
@@ -39,12 +39,21 @@ pub async fn pipeline_task(
     while let Some(cap) = rx.recv().await {
         let config = config.clone();
         let tx = display_tx.clone();
-        tokio::spawn(async move { process_command(config, cap, tx).await; });
+        tokio::spawn(async move { process_pipeline(config, cap, tx).await; });
     }
 }
 
-async fn process_command(config: Config, cap: CapturedCommand, display_tx: mpsc::Sender<Vec<u8>>) {
+async fn process_pipeline(config: Config, cap: CapturedCommand, display_tx: mpsc::Sender<Vec<u8>>) {
     let clean = strip_ansi(&cap.bytes);
+    semantic_compress(config, cap, display_tx, clean).await;
+}
+
+async fn semantic_compress(
+    config: Config,
+    cap: CapturedCommand,
+    display_tx: mpsc::Sender<Vec<u8>>,
+    clean: String,
+) {
     let threshold = config.summarize_threshold_with_source().0;
     let disabled = config.disable_summary_with_source().0;
     let timeout = Duration::from_secs(config.summarize_timeout_secs_with_source().0);
