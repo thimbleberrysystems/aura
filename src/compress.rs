@@ -1,7 +1,8 @@
 use std::time::Duration;
+use futures::StreamExt;
 use genai::Client;
 use genai::ServiceTarget;
-use genai::chat::ChatRequest;
+use genai::chat::{ChatRequest, ChatStream, ChatStreamEvent};
 use genai::resolver::{AuthData, ServiceTargetResolver};
 use tokio::sync::mpsc;
 use crate::cfg::Config;
@@ -47,59 +48,74 @@ async fn process_command(config: Config, cap: CapturedCommand, display_tx: mpsc:
     let threshold = config.summarize_threshold_with_source().0;
     let disabled = config.disable_summary_with_source().0;
     let timeout = Duration::from_secs(config.summarize_timeout_secs_with_source().0);
+
+    if disabled || clean.len() < threshold {
+        // Short output or summaries disabled — display as-is.
+        let mut out = b"\r\n".to_vec();
+        out.extend_from_slice(&cap.bytes);
+        if !cap.prompt.is_empty() {
+            out.extend_from_slice(&cap.prompt);
+        }
+        let _ = display_tx.send(out).await;
+        return;
+    }
+
     let model_cfg = ModelConfig {
         name: config.model_name(),
         endpoint: config.model_endpoint(),
         api_key: config.model_api_key(),
     };
 
-    let display_bytes = if disabled || clean.len() < threshold {
-        // Short output or summaries disabled — display as-is.
-        cap.bytes.clone()
-    } else {
-        match tokio::time::timeout(timeout, call_semantic_compressor(model_cfg, &cap.cmd, &clean)).await {
-            Ok(Ok(summary)) if is_useful(&summary, &clean) => {
-                let normalised = summary.trim_end().replace('\n', "\r\n");
-                let mut out = normalised.into_bytes();
-                out.extend_from_slice(b"\r\n");
-                out
+    let stream_result = tokio::time::timeout(
+        timeout,
+        start_llm_stream(model_cfg, &cap.cmd, &clean),
+    ).await;
+
+    match stream_result {
+        Ok(Ok(mut stream)) => {
+            let _ = display_tx.send(b"\r\n".to_vec()).await;
+            loop {
+                match tokio::time::timeout(timeout, stream.next()).await {
+                    Ok(Some(Ok(ChatStreamEvent::Chunk(chunk)))) => {
+                        let text = chunk.content.replace('\n', "\r\n");
+                        let _ = display_tx.send(text.into_bytes()).await;
+                    }
+                    Ok(Some(Ok(_))) => {}
+                    Ok(Some(Err(e))) => {
+                        tracing::warn!("LLM stream error: {e}");
+                        break;
+                    }
+                    Ok(None) | Err(_) => break,
+                }
             }
-            Ok(Ok(_)) => cap.bytes.clone(),
-            Ok(Err(e)) => {
-                let mut out = format!("\r\n[AURA: summarize error: {}]\r\n", e).into_bytes();
-                out.extend_from_slice(&cap.bytes);
-                out
-            }
-            Err(_) => {
-                let mut out = b"\r\n[AURA: summarize timeout]\r\n".to_vec();
-                out.extend_from_slice(&cap.bytes);
-                out
+            if !cap.prompt.is_empty() {
+                let _ = display_tx.send(cap.prompt).await;
             }
         }
-    };
-
-    // Prepend \r\n and re-append the shell prompt.
-    let mut out = b"\r\n".to_vec();
-    out.extend_from_slice(&display_bytes);
-    if !cap.prompt.is_empty() {
-        out.extend_from_slice(&cap.prompt);
+        Ok(Err(e)) => {
+            let mut out = format!("\r\n[AURA: summarize error: {}]\r\n", e).into_bytes();
+            out.extend_from_slice(&cap.bytes);
+            if !cap.prompt.is_empty() {
+                out.extend_from_slice(&cap.prompt);
+            }
+            let _ = display_tx.send(out).await;
+        }
+        Err(_) => {
+            let mut out = b"\r\n[AURA: summarize timeout]\r\n".to_vec();
+            out.extend_from_slice(&cap.bytes);
+            if !cap.prompt.is_empty() {
+                out.extend_from_slice(&cap.prompt);
+            }
+            let _ = display_tx.send(out).await;
+        }
     }
-    let _ = display_tx.send(out).await;
 }
 
-/// Returns true if the LLM summary is actually shorter and non-trivial.
-fn is_useful(summary: &str, original: &str) -> bool {
-    !summary.trim().is_empty()
-        && !summary.trim().eq_ignore_ascii_case("ORIGINAL")
-        && summary.len() < original.len()
-}
-
-/// Distill terminal output using the configured model.
-async fn call_semantic_compressor(
+async fn start_llm_stream(
     model_cfg: ModelConfig,
     cmd: &str,
     clean_output: &str,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<ChatStream> {
     let name = model_cfg.name.clone();
     let client = build_client(model_cfg);
     let prompt = format!(
@@ -111,6 +127,6 @@ Command: {cmd}\n\
         cmd = cmd,
         clean_output = clean_output,
     );
-    let response = client.exec_chat(&name, ChatRequest::from_user(prompt), None).await?;
-    Ok(response.into_first_text().unwrap_or_default())
+    let stream_response = client.exec_chat_stream(&name, ChatRequest::from_user(prompt), None).await?;
+    Ok(stream_response.stream)
 }

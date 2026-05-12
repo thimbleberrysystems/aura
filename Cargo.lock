@@ -59,6 +59,7 @@ dependencies = [
  "anyhow",
  "atty",
  "crossterm",
+ "futures",
  "genai",
  "portable-pty",
  "serde",
