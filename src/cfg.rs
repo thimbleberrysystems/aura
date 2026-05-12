@@ -17,6 +17,7 @@ pub enum Source {
 }
 
 pub const DEFAULT_CONTROL_TCP: &str = "127.0.0.1:40001";
+pub const DEFAULT_MODEL_ADDR: &str = "127.0.0.1:11434";
 
 impl Config {
     pub fn logging_enabled(&self) -> bool {
@@ -105,6 +106,19 @@ impl Config {
             return (v, Source::Env);
         }
         (DEFAULT_CONTROL_TCP.to_string(), Source::Default)
+    }
+
+    /// Model server address plus its source (host:port). Default: 127.0.0.1:11434
+    pub fn model_addr_with_source(&self) -> (String, Source) {
+        if let Ok(v) = std::env::var("AURA_MODEL_ADDR") {
+            return (v, Source::Env);
+        }
+        (DEFAULT_MODEL_ADDR.to_string(), Source::Default)
+    }
+
+    /// Model server address (host:port) - effective value only.
+    pub fn model_addr(&self) -> String {
+        self.model_addr_with_source().0
     }
 
 }

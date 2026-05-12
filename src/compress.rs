@@ -32,7 +32,7 @@ async fn process_command(config: Config, cap: CapturedCommand, display_tx: mpsc:
         // Short output or summaries disabled — display as-is.
         cap.bytes.clone()
     } else {
-        match tokio::time::timeout(timeout, call_semantic_compressor(&model, &cap.cmd, &clean)).await {
+        match tokio::time::timeout(timeout, call_semantic_compressor(&model, &cap.cmd, &clean, &model_addr)).await {
             Ok(Ok(summary)) if is_useful(&summary, &clean) => {
                 let normalised = summary.trim_end().replace('\n', "\r\n");
                 let mut out = normalised.into_bytes();
@@ -76,16 +76,11 @@ async fn call_semantic_compressor(
     model: &str,
     cmd: &str,
     clean_output: &str,
+    model_addr: &str,
 ) -> anyhow::Result<String> {
     let client = Client::default();
     let prompt = format!(
-        "Distill this terminal output for another LLM.\n\
-Discard: progress bars, UI noise, ANSI codes, and repetitive in-progress logs.\n\
-Preserve: Error messages, stack traces, exit codes, and unique identifiers (IPs, IDs, paths).\n\
-Constraint: Output ONLY the distilled data. No conversational filler. No leading preamble.\n\
-Goal: You are a compressor. Reduce text size while preserving important info for an LLM reader.\n\
-If the output is already concise, return it as-is.\n\
-No unnecessary line breaks, no preamble like \"Summary:\". Just return the distilled text.\n\
+        "Shorten this terminal output, retaining essential information only for another LLM.\n\
 Command: {cmd}\n\
 <BEGIN_OUTPUT>\n\
 {clean_output}\n\
