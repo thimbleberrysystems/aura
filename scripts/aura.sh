@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ── Set your model here ────────────────────────────────────────────────────────
-AURA_MODEL="${AURA_MODEL:-gemma4}"
+AURA_MODEL="${AURA_MODEL:-qwen2.5-coder:3b}"
 # ──────────────────────────────────────────────────────────────────────────────
 
 export AURA_MODEL
