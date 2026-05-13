@@ -74,10 +74,11 @@ async fn semantic_compress(
         endpoint: config.model_endpoint(),
         api_key: config.model_api_key(),
     };
+    let prompt_template = config.compress_prompt();
 
     let stream_result = tokio::time::timeout(
         timeout,
-        start_llm_stream(model_cfg, &cap.cmd, &clean),
+        start_llm_stream(model_cfg, &prompt_template, &cap.cmd, &clean),
     ).await;
 
     match stream_result {
@@ -122,20 +123,15 @@ async fn semantic_compress(
 
 async fn start_llm_stream(
     model_cfg: ModelConfig,
+    prompt_template: &str,
     cmd: &str,
     clean_output: &str,
 ) -> anyhow::Result<ChatStream> {
     let name = model_cfg.name.clone();
     let client = build_client(model_cfg);
-    let prompt = format!(
-        "Shorten this terminal output, retaining essential information only for another LLM.\n\
-Command: {cmd}\n\
-<BEGIN_OUTPUT>\n\
-{clean_output}\n\
-<END_OUTPUT>",
-        cmd = cmd,
-        clean_output = clean_output,
-    );
+    let prompt = prompt_template
+        .replace("{cmd}", cmd)
+        .replace("{clean_output}", clean_output);
     let stream_response = client.exec_chat_stream(&name, ChatRequest::from_user(prompt), None).await?;
     Ok(stream_response.stream)
 }

@@ -46,6 +46,7 @@ where
     out.push_str(&format!("disable_summary: {} ({})\n", disable_summary_effective, src_name(disable_summary_src)));
     out.push_str(&format!("summarize_threshold: {} ({})\n", summarize_threshold_effective, src_name(summarize_threshold_src)));
     out.push_str(&format!("summarize_timeout_secs: {} ({})\n", summarize_timeout_effective, src_name(summarize_timeout_src)));
+    out.push_str(&format!("compress_prompt: {} (AURA_COMPRESS_PROMPT)\n", cfg.compress_prompt()));
     out.push_str(&format!("control_tcp: {} ({})\n", control_tcp_effective, src_name(control_tcp_src)));
 
     if let Err(e) = w.write_all(out.as_bytes()).await {

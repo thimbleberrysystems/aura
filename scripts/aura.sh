@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ── Model ──────────────────────────────────────────────────────────────────────
-AURA_MODEL_NAME="${AURA_MODEL_NAME:-qwen2.5-coder:3b}"
+AURA_MODEL_NAME="${AURA_MODEL_NAME:-qwen2.5-coder:1.5b}"
 export AURA_MODEL_NAME
 
 # ── Model server address (host:port, used to bind Docker/Ollama) ───────────────

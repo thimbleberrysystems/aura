@@ -1,9 +1,9 @@
 use anyhow::Context;
 use crossterm::terminal::enable_raw_mode;
-use portable_pty::{native_pty_system, CommandBuilder};
+use libc;
+use portable_pty::{native_pty_system, CommandBuilder, MasterPty, Child};
 use std::env;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
@@ -44,6 +44,11 @@ async fn main() -> anyhow::Result<()> {
         pty_pair.slave.spawn_command(cmd).context("spawn_command failed")?
     };
 
+    // Shell's process group id — used by capture_task to detect command end
+    // via tcgetpgrp.  Interactive shells are always their own session/pgid
+    // leader, so pgid == pid.
+    let shell_pgid = child.process_id().unwrap_or(0) as libc::pid_t;
+
     let pty_reader = master.lock().unwrap().try_clone_reader().context("clone reader")?;
     let pty_writer = master.lock().unwrap().take_writer().context("take writer")?;
 
@@ -82,7 +87,8 @@ async fn main() -> anyhow::Result<()> {
         pty_writer,
         display_tx.clone(),
         cmd_tx,
-        Duration::from_millis(200),
+        Arc::clone(&master),
+        shell_pgid,
     ));
 
     // ── Stage 2: summarize ────────────────────────────────────────────────────

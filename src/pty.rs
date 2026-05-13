@@ -1,5 +1,6 @@
 use crossterm::terminal::{disable_raw_mode, size as terminal_size};
-use portable_pty::PtySize;
+use libc;
+use portable_pty::{MasterPty, PtySize};
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -62,8 +63,12 @@ pub fn current_pty_size() -> PtySize {
 ///
 /// Internally spawns a stdin reader thread and a PTY reader thread:
 /// - `Idle` / `Passthrough`: raw PTY bytes go directly to `display_tx`.
-/// - `Running` + silent for `idle_timeout`: captured bytes are packaged as a
-///   `CapturedCommand` and sent to `cmd_tx` for the pipeline to process.
+/// - `Running` + shell returns to foreground (via `tcgetpgrp` / `process_group_leader`)
+///   + brief PTY silence: captured bytes are packaged as a `CapturedCommand`
+///   and sent to `cmd_tx` for the pipeline to process.
+///
+/// Falls back to a 200 ms idle-timeout if `process_group_leader` is not
+/// implemented by the PTY backend.
 ///
 /// Returns when the PTY reader closes (i.e. the shell has exited).
 pub async fn capture_task(
@@ -71,7 +76,8 @@ pub async fn capture_task(
     pty_writer: Box<dyn Write + Send>,
     display_tx: mpsc::Sender<Vec<u8>>,
     cmd_tx: mpsc::Sender<CapturedCommand>,
-    idle_timeout: Duration,
+    master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
+    shell_pgid: libc::pid_t,
 ) {
     let shared = Arc::new(Mutex::new(CommandState {
         mode: Mode::Idle,
@@ -179,8 +185,15 @@ pub async fn capture_task(
     });
 
     // ── Idle-detection loop ───────────────────────────────────────────────────
-    // Polls every 50 ms. When Running and the PTY has been silent for
-    // `idle_timeout`, emits a CapturedCommand to the pipeline channel.
+    // Polls every 50 ms.
+    //
+    // Primary trigger: `process_group_leader()` returns `shell_pgid`, meaning
+    // the shell has become the foreground process group again (command exited).
+    // A short silence window (50 ms) is required after that to let the PTY
+    // reader thread drain any remaining output.
+    //
+    // Fallback: if `process_group_leader()` is unimplemented (returns `None`),
+    // fall back to a pure 200 ms PTY-silence timeout.
     let mut done_rx = done_rx;
     loop {
         tokio::select! {
@@ -189,14 +202,27 @@ pub async fn capture_task(
                 {
                     let mut s = shared.lock().unwrap();
                     if s.mode == Mode::Running {
-                        if let Some(last) = s.last_pty_activity {
-                            if Instant::now().duration_since(last) >= idle_timeout {
-                                let captured = std::mem::take(&mut s.captured);
-                                let cmd = std::mem::take(&mut s.pending_cmd);
-                                s.mode = Mode::Idle;
-                                s.last_pty_activity = None;
-                                emit = Some((cmd, captured));
-                            }
+                        let fg_pgid = master.lock().unwrap().process_group_leader();
+                        let (shell_is_fg, has_pgid_support) = match fg_pgid {
+                            Some(pgid) => (pgid == shell_pgid, true),
+                            None       => (false, false),
+                        };
+                        // Silence duration since last PTY byte.
+                        let silence = s.last_pty_activity
+                            .map(|t| Instant::now().duration_since(t));
+                        let should_emit = if has_pgid_support {
+                            // Shell back in fg + at least 50 ms of silence.
+                            shell_is_fg && silence.map(|d| d >= Duration::from_millis(50)).unwrap_or(true)
+                        } else {
+                            // Fallback: 200 ms of pure silence.
+                            silence.map(|d| d >= Duration::from_millis(200)).unwrap_or(false)
+                        };
+                        if should_emit {
+                            let captured = std::mem::take(&mut s.captured);
+                            let cmd = std::mem::take(&mut s.pending_cmd);
+                            s.mode = Mode::Idle;
+                            s.last_pty_activity = None;
+                            emit = Some((cmd, captured));
                         }
                     }
                 }

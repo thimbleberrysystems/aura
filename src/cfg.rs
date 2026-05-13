@@ -76,6 +76,15 @@ impl Config {
         (3000, Source::Default)
     }
 
+    /// Prompt template for LLM compression. Override with AURA_COMPRESS_PROMPT.
+    /// The string may contain `{cmd}`, `{clean_output}`, and `{context_block}` placeholders.
+    pub fn compress_prompt(&self) -> String {
+        std::env::var("AURA_COMPRESS_PROMPT").unwrap_or_else(|_| {
+            "Summarize the below shell output (will be used by other LLM), retaining essential information only for another LLM.\
+\nCommand: {cmd}\n<BEGIN_OUTPUT>\n{clean_output}\n<END_OUTPUT>".to_string()
+        })
+    }
+
     /// Control TCP address plus its source.
     pub fn control_tcp_with_source(&self) -> (String, Source) {
         if let Ok(v) = std::env::var("AURA_CONTROL_TCP") {
