@@ -80,7 +80,7 @@ impl Config {
     /// The string may contain `{cmd}`, `{clean_output}`, and `{context_block}` placeholders.
     pub fn compress_prompt(&self) -> String {
         std::env::var("AURA_COMPRESS_PROMPT").unwrap_or_else(|_| {
-            "Summarize the below shell output (will be used by other LLM), retaining essential information only for another LLM.\
+            "Act as a terminal log compressor. Convert the output into a concise technical brief. Keep: Commands, exit codes, error lines, and unique errors. Discard: Everything else.\
 \nCommand: {cmd}\n<BEGIN_OUTPUT>\n{clean_output}\n<END_OUTPUT>".to_string()
         })
     }

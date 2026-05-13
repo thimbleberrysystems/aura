@@ -5,7 +5,7 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use termwiz::escape::parser::Parser as VteParser;
-use termwiz::escape::Action;
+use termwiz::escape::{Action, ControlCode};
 use tokio::sync::mpsc;
 use tracing::debug;
 
@@ -92,13 +92,14 @@ pub async fn capture_task(
     let shared_stdin = Arc::clone(&shared);
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
+        let mut vte = VteParser::new();
         loop {
             match std::io::stdin().read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     let data = &buf[..n];
-                    for &b in data {
-                        if b == b'\n' || b == b'\r' {
+                    vte.parse(data, |action| match action {
+                        Action::Control(ControlCode::CarriageReturn | ControlCode::LineFeed) => {
                             let mut s = shared_stdin.lock().unwrap();
                             if s.mode == Mode::Idle {
                                 s.mode = Mode::Running;
@@ -107,13 +108,34 @@ pub async fn capture_task(
                             } else {
                                 s.pending_cmd.clear();
                             }
-                        } else if b.is_ascii_graphic() || b == b' ' {
+                        }
+                        Action::Control(ControlCode::Backspace) => {
                             let mut s = shared_stdin.lock().unwrap();
                             if s.mode == Mode::Idle {
-                                s.pending_cmd.push(b as char);
+                                s.pending_cmd.pop();
                             }
                         }
-                    }
+                        Action::Print(c) if !c.is_control() => {
+                            let mut s = shared_stdin.lock().unwrap();
+                            if s.mode == Mode::Idle {
+                                // DEL (0x7f) acts as backspace in most terminals
+                                if c == '\x7f' {
+                                    s.pending_cmd.pop();
+                                } else {
+                                    s.pending_cmd.push(c);
+                                }
+                            }
+                        }
+                        Action::PrintString(ps) => {
+                            let mut s = shared_stdin.lock().unwrap();
+                            if s.mode == Mode::Idle {
+                                for c in ps.chars().filter(|c| !c.is_control()) {
+                                    s.pending_cmd.push(c);
+                                }
+                            }
+                        }
+                        _ => {}
+                    });
                     if stdin_tx.blocking_send(data.to_vec()).is_err() {
                         break;
                     }

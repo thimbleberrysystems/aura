@@ -1,7 +1,7 @@
 use anyhow::Context;
 use crossterm::terminal::enable_raw_mode;
 use libc;
-use portable_pty::{native_pty_system, CommandBuilder, MasterPty, Child};
+use portable_pty::{native_pty_system, CommandBuilder};
 use std::env;
 use std::sync::{Arc, Mutex};
 use tokio::io::AsyncWriteExt;
