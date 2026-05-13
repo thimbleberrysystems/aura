@@ -110,6 +110,177 @@ More importantly: **token budget recovered = reasoning capacity restored**. The 
 
 ---
 
+## What Compression Looks Like
+
+### Example 1 — `cargo build` (compilation failure)
+
+<details>
+<summary><strong>Raw output sent to LLM without AURA</strong> &nbsp;·&nbsp; ~7,800 tokens</summary>
+
+```
+   Compiling proc-macro2 v1.0.79
+   Compiling unicode-ident v1.0.12
+   Compiling quote v1.0.35
+   Compiling syn v2.0.52
+   Compiling serde_derive v1.0.197
+   Compiling serde v1.0.197
+   Compiling autocfg v1.2.0
+   Compiling libc v0.2.153
+   Compiling cfg-if v1.0.0
+   Compiling once_cell v1.19.0
+   Compiling smallvec v1.13.1
+   ... (180 more crate compile lines) ...
+   Compiling aura v0.1.0 (/home/user/aura)
+error[E0308]: mismatched types
+  --> src/compress.rs:47:18
+   |
+47 |         Ok(target)
+   |            ^^^^^^ expected `ServiceTarget`, found `&ServiceTarget`
+   |
+note: expected struct `ServiceTarget`
+      found reference `&ServiceTarget`
+
+error[E0502]: cannot borrow `state` as immutable because it is also borrowed as mutable
+  --> src/pty.rs:134:22
+   |
+131|         let mut s = state.lock().unwrap();
+   |                     ----- mutable borrow occurs here
+134|         debug!("{:?}", state);
+   |                        ^^^^^ immutable borrow occurs here
+
+For more information about these errors, try `rustc --explain E0308`.
+error: could not compile `aura` (bin "aura") due to 2 previous errors
+```
+</details>
+
+**AURA output** &nbsp;·&nbsp; ~120 tokens
+
+```
+cargo build FAILED (2 errors):
+• src/compress.rs:47 — E0308: mismatched types; Ok(target) expects ServiceTarget, got &ServiceTarget
+• src/pty.rs:134 — E0502: cannot borrow `state` as immutable; mutable borrow active from line 131
+```
+
+---
+
+### Example 2 — `pytest` (test suite with failures)
+
+<details>
+<summary><strong>Raw output sent to LLM without AURA</strong> &nbsp;·&nbsp; ~11,200 tokens</summary>
+
+```
+============================= test session starts ==============================
+platform linux -- Python 3.11.8, pytest-8.1.1, pluggy-1.4.0
+rootdir: /home/user/myapp
+collected 214 items
+
+tests/test_auth.py ....................................                   [ 16%]
+tests/test_billing.py .................F..........                       [ 29%]
+tests/test_db.py .......................................                  [ 44%]
+tests/test_api.py ...........F...................................F.......  [ 87%]
+tests/test_utils.py ...........................                          [100%]
+
+=================================== FAILURES ===================================
+_________________________ test_stripe_webhook_signature ________________________
+
+    def test_stripe_webhook_signature():
+        payload = b'{"type": "payment_intent.succeeded"}'
+>       assert verify_signature(payload, "whsec_test123") == True
+E       AssertionError: assert False == True
+E       +  where False = verify_signature(b'{"type": ...}', 'whsec_test123')
+
+tests/test_billing.py:203: AssertionError
+
+_________________________ test_user_rate_limit_redis ___________________________
+
+    def test_user_rate_limit_redis():
+>       client = redis.Redis(host='localhost', port=6379)
+>       client.ping()
+E       redis.exceptions.ConnectionError: Error 111 connecting to localhost:6379. Connection refused.
+
+tests/test_api.py:87: ConnectionError
+... (490 more lines of tracebacks, warnings, captured stdout) ...
+```
+</details>
+
+**AURA output** &nbsp;·&nbsp; ~180 tokens
+
+```
+pytest: 211 passed, 3 failed (214 total)
+
+FAILURES:
+• tests/test_billing.py:203 — test_stripe_webhook_signature: verify_signature() returned False; expected True (whsec_test123)
+• tests/test_api.py:87 — test_user_rate_limit_redis: Redis ConnectionError on localhost:6379 (connection refused — Redis not running?)
+• tests/test_api.py:341 — test_admin_export_csv: AssertionError response.status_code == 403, got 500
+```
+
+---
+
+### Example 3 — `kubectl describe pod` (crash loop)
+
+<details>
+<summary><strong>Raw output sent to LLM without AURA</strong> &nbsp;·&nbsp; ~2,600 tokens</summary>
+
+```
+Name:             api-server-7d9f8b-xk2p4
+Namespace:        production
+Priority:         0
+Node:             gke-cluster-1-default-pool-3a8f2b1c/10.128.0.5
+Start Time:       Tue, 13 May 2026 09:14:22 +0000
+Labels:           app=api-server
+                  pod-template-hash=7d9f8b
+Annotations:      <none>
+Status:           Running
+IP:               10.100.4.17
+IPs:
+  IP:           10.100.4.17
+Controlled By:    ReplicaSet/api-server-7d9f8b
+Containers:
+  api-server:
+    Container ID:   containerd://a8f3c2...
+    Image:          gcr.io/myproject/api-server:v2.4.1
+    Image ID:       gcr.io/myproject/api-server@sha256:3f8a...
+    Port:           8080/TCP
+    Host Port:      0/TCP
+    State:          Waiting
+      Reason:       CrashLoopBackOff
+    Last State:     Terminated
+      Reason:       Error
+      Exit Code:    1
+      Started:      Tue, 13 May 2026 09:22:11 +0000
+      Finished:     Tue, 13 May 2026 09:22:14 +0000
+    Ready:          False
+    Restart Count:  7
+    Limits:
+      cpu:     500m
+      memory:  512Mi
+    Requests:
+      cpu:        250m
+      memory:     256Mi
+    Environment:
+      DATABASE_URL:    <set to the key 'url' in secret 'db-secret'>    Optional: false
+      REDIS_URL:       <set to the key 'url' in secret 'redis-secret'> Optional: false
+      LOG_LEVEL:       info
+    Mounts:
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-xyz (ro)
+... (60 more lines of events, volume mounts, node info) ...
+Events:
+  Warning  BackOff    2m    kubelet  Back-off restarting failed container api-server
+```
+</details>
+
+**AURA output** &nbsp;·&nbsp; ~90 tokens
+
+```
+Pod api-server-7d9f8b-xk2p4 (production): CrashLoopBackOff
+• Image: gcr.io/myproject/api-server:v2.4.1
+• Exit code 1 · 7 restarts · last crash duration: 3s (09:22:11–09:22:14)
+• Node: 10.128.0.5 · Pod IP: 10.100.4.17
+• Event: Back-off restarting failed container api-server (2m ago)
+```
+
+---
+
 ## Why This Is Hard to Copy
 
 ### 1 · OS-Level Integration Is a Structural Moat
