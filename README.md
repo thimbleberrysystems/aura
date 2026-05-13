@@ -181,6 +181,32 @@ flowchart TD
     CALL --> PUSH
     PUSH --> RING2
     RING2 --> SNAP
+
+    classDef inputCls  fill:#FEF9C3,stroke:#CA8A04,color:#422006
+    classDef ptyCls    fill:#DBEAFE,stroke:#2563EB,color:#1E3A8A
+    classDef smCls     fill:#E0E7FF,stroke:#4338CA,color:#1E1B4B
+    classDef stripCls  fill:#EDE9FE,stroke:#7C3AED,color:#2E1065
+    classDef gateCls   fill:#D1FAE5,stroke:#059669,color:#064E3B
+    classDef snapCls   fill:#CFFAFE,stroke:#0891B2,color:#164E63
+    classDef callCls   fill:#FCE7F3,stroke:#DB2777,color:#500724
+    classDef pushCls   fill:#FEE2E2,stroke:#DC2626,color:#450A0A
+    classDef ringCls   fill:#FEF3C7,stroke:#D97706,color:#451A03
+    classDef ctrlCls   fill:#F1F5F9,stroke:#64748B,color:#0F172A
+    classDef shellCls  fill:#D1FAE5,stroke:#059669,color:#064E3B
+    classDef modelCls  fill:#FEE2E2,stroke:#DC2626,color:#450A0A
+
+    class KBD inputCls
+    class PTY ptyCls
+    class SM smCls
+    class STRIP2 stripCls
+    class GATE gateCls
+    class SNAP snapCls
+    class CALL callCls
+    class PUSH pushCls
+    class RING2 ringCls
+    class CTRL ctrlCls
+    class SH shellCls
+    class OLLAMA2 modelCls
 ```
 
 ### PTY State Machine
