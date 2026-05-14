@@ -1,8 +1,10 @@
-use std::env;
+use anyhow::Context;
 use std::io::{Read, Write};
 
+use aura::cfg::load_config;
+
 fn main() -> anyhow::Result<()> {
-    let mut args: Vec<String> = env::args().collect();
+    let mut args: Vec<String> = std::env::args().collect();
     if args.len() <= 1 {
         eprintln!("usage: aura-cli <command>");
         std::process::exit(2);
@@ -11,8 +13,8 @@ fn main() -> anyhow::Result<()> {
     let cmd = args.join(" ");
     let cmdline = format!("{}\n", cmd);
 
-    // TCP-only client
-    let tcp = env::var("AURA_CONTROL_TCP").unwrap_or_else(|_| "127.0.0.1:40001".to_string());
+    let cfg = load_config().context("failed to load configuration")?;
+    let tcp = cfg.control_tcp().context("control_tcp is missing in config file; set server.control_tcp in config/aura.toml")?;
     let mut stream = std::net::TcpStream::connect(&tcp)?;
     stream.write_all(cmdline.as_bytes())?;
     let mut out = Vec::new();

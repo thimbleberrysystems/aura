@@ -1,119 +1,214 @@
-use serde::Deserialize;
-use std::fs;
-use std::path::Path;
+use anyhow::Context;
+use config::File;
+use serde::{Deserialize, Serialize};
+use std::env;
+use std::path::PathBuf;
 
-#[derive(Deserialize, Debug, Default, Clone)]
+#[derive(Deserialize, Serialize, Debug, Default, Clone)]
 pub struct Config {
-    pub logging: Option<bool>,
+    pub logging: Option<LoggingConfig>,
+    pub summary: Option<SummaryConfig>,
+    pub compress: Option<CompressConfig>,
+    pub server: Option<ServerConfig>,
+    pub model: Option<ModelConfig>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Default, Clone)]
+pub struct LoggingConfig {
+    pub enabled: Option<bool>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Default, Clone)]
+pub struct SummaryConfig {
+    pub disable: Option<bool>,
+    pub threshold: Option<usize>,
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Default, Clone)]
+pub struct CompressConfig {
+    pub prompt: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Default, Clone)]
+pub struct ServerConfig {
+    pub control_tcp: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Default, Clone)]
+pub struct ModelConfig {
+    pub name: Option<String>,
+    pub addr: Option<String>,
+    pub endpoint: Option<String>,
+    pub api_key: Option<String>,
 }
 
 /// Where a configuration value came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
-    Env,
     Config,
-    Default,
+    Missing,
 }
 
-pub const DEFAULT_CONTROL_TCP: &str = "127.0.0.1:40001";
-pub const DEFAULT_MODEL_ADDR: &str = "127.0.0.1:11434";
-
 impl Config {
-    /// Model name for genai (e.g. "llama3.2", "gpt-4o"). Override with AURA_MODEL_NAME.
-    pub fn model_name(&self) -> String {
-        std::env::var("AURA_MODEL_NAME").unwrap_or_else(|_| "llama3.2".to_string())
-    }
-
-    /// Model endpoint URL. Override with AURA_MODEL_ENDPOINT.
-    pub fn model_endpoint(&self) -> Option<String> {
-        std::env::var("AURA_MODEL_ENDPOINT").ok()
-    }
-
-    /// Model API key. Override with AURA_MODEL_API_KEY.
-    pub fn model_api_key(&self) -> Option<String> {
-        std::env::var("AURA_MODEL_API_KEY").ok()
-    }
-
-    /// Logging value plus its source.
-    pub fn logging_with_source(&self) -> (bool, Source) {
-        if let Ok(v) = std::env::var("AURA_LOGGING") {
-            let v = v.to_lowercase();
-            return (
-                matches!(v.as_str(), "1" | "true" | "yes"),
-                Source::Env,
-            );
+    /// Logging enabled flag plus its source.
+    pub fn logging_enabled_with_source(&self) -> (Option<bool>, Source) {
+        if let Some(logging) = &self.logging {
+            if let Some(enabled) = logging.enabled {
+                return (Some(enabled), Source::Config);
+            }
         }
-        if let Some(b) = self.logging {
-            return (b, Source::Config);
-        }
-        (false, Source::Default)
+        (None, Source::Missing)
     }
-
-
 
     /// Disable-summary value plus its source.
-    pub fn disable_summary_with_source(&self) -> (bool, Source) {
-        if let Ok(v) = std::env::var("AURA_DISABLE_SUMMARY") {
-            let v = v.to_lowercase();
-            return (matches!(v.as_str(), "1" | "true" | "yes"), Source::Env);
+    pub fn disable_summary_with_source(&self) -> (Option<bool>, Source) {
+        if let Some(summary) = &self.summary {
+            if let Some(disable) = summary.disable {
+                return (Some(disable), Source::Config);
+            }
         }
-        (false, Source::Default)
+        (None, Source::Missing)
     }
 
     /// Summarize threshold plus its source.
-    pub fn summarize_threshold_with_source(&self) -> (usize, Source) {
-        if let Ok(v) = std::env::var("AURA_SUMMARIZE_THRESHOLD") {
-            if let Ok(n) = v.parse::<usize>() { return (n, Source::Env); }
+    pub fn summarize_threshold_with_source(&self) -> (Option<usize>, Source) {
+        if let Some(summary) = &self.summary {
+            if let Some(threshold) = summary.threshold {
+                return (Some(threshold), Source::Config);
+            }
         }
-        (250, Source::Default)
+        (None, Source::Missing)
     }
 
     /// Summarize timeout plus its source.
-    pub fn summarize_timeout_secs_with_source(&self) -> (u64, Source) {
-        if let Ok(v) = std::env::var("AURA_SUMMARIZE_TIMEOUT_SECS") {
-            if let Ok(n) = v.parse::<u64>() { return (n, Source::Env); }
+    pub fn summarize_timeout_secs_with_source(&self) -> (Option<u64>, Source) {
+        if let Some(summary) = &self.summary {
+            if let Some(timeout_secs) = summary.timeout_secs {
+                return (Some(timeout_secs), Source::Config);
+            }
         }
-        (3000, Source::Default)
+        (None, Source::Missing)
     }
 
-    /// Prompt template for LLM compression. Override with AURA_COMPRESS_PROMPT.
-    /// The string may contain `{cmd}`, `{clean_output}`, and `{context_block}` placeholders.
-    pub fn compress_prompt(&self) -> String {
-        std::env::var("AURA_COMPRESS_PROMPT").unwrap_or_else(|_| {
-            "Act as a terminal log compressor. Convert the output into a concise technical brief. Keep: Commands, exit codes, error lines, and unique errors. Discard: Everything else.\
-\nCommand: {cmd}\n<BEGIN_OUTPUT>\n{clean_output}\n<END_OUTPUT>".to_string()
-        })
+    /// Prompt template for LLM compression.
+    pub fn compress_prompt(&self) -> Option<String> {
+        self.compress.as_ref().and_then(|c| c.prompt.clone())
     }
 
     /// Control TCP address plus its source.
-    pub fn control_tcp_with_source(&self) -> (String, Source) {
-        if let Ok(v) = std::env::var("AURA_CONTROL_TCP") {
-            return (v, Source::Env);
+    pub fn control_tcp_with_source(&self) -> (Option<String>, Source) {
+        if let Some(server) = &self.server {
+            if let Some(control_tcp) = server.control_tcp.clone() {
+                return (Some(control_tcp), Source::Config);
+            }
         }
-        (DEFAULT_CONTROL_TCP.to_string(), Source::Default)
+        (None, Source::Missing)
     }
 
-    /// Model server address plus its source (host:port). Default: 127.0.0.1:11434
-    pub fn model_addr_with_source(&self) -> (String, Source) {
-        if let Ok(v) = std::env::var("AURA_MODEL_ADDR") {
-            return (v, Source::Env);
-        }
-        (DEFAULT_MODEL_ADDR.to_string(), Source::Default)
+    /// Control TCP address.
+    pub fn control_tcp(&self) -> Option<String> {
+        self.server.as_ref().and_then(|s| s.control_tcp.clone())
     }
 
+    /// Model server address plus its source.
+    pub fn model_addr_with_source(&self) -> (Option<String>, Source) {
+        if let Some(model) = &self.model {
+            if let Some(addr) = model.addr.clone() {
+                return (Some(addr), Source::Config);
+            }
+        }
+        (None, Source::Missing)
+    }
+
+    /// Model server address.
+    pub fn model_addr(&self) -> Option<String> {
+        self.model.as_ref().and_then(|m| m.addr.clone())
+    }
+
+    /// Model name.
+    pub fn model_name(&self) -> Option<String> {
+        self.model.as_ref().and_then(|m| m.name.clone())
+    }
+
+    /// Model endpoint URL.
+    pub fn model_endpoint(&self) -> Option<String> {
+        self.model.as_ref().and_then(|m| m.endpoint.clone())
+    }
+
+    /// Model API key.
+    pub fn model_api_key(&self) -> Option<String> {
+        self.model.as_ref().and_then(|m| m.api_key.clone())
+    }
+
+    /// Validate that all required config values are present.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        self.logging_enabled_with_source().0
+            .context("logging.enabled is missing in config")?;
+        self.disable_summary_with_source().0
+            .context("summary.disable is missing in config")?;
+        self.summarize_threshold_with_source().0
+            .context("summary.threshold is missing in config")?;
+        self.summarize_timeout_secs_with_source().0
+            .context("summary.timeout_secs is missing in config")?;
+        self.compress_prompt()
+            .context("compress.prompt is missing in config")?;
+        self.control_tcp()
+            .context("server.control_tcp is missing in config")?;
+        self.model_name()
+            .context("model.name is missing in config")?;
+        self.model_addr()
+            .context("model.addr is missing in config")?;
+        Ok(())
+    }
 }
 
-/// Load configuration from `config/aura.toml` if present.
-pub fn load_config() -> Config {
-    let path = Path::new("config/aura.toml");
-    if !path.exists() {
-        return Config::default();
+fn config_file_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    if let Ok(cwd) = env::current_dir() {
+        paths.extend(ancestor_config_paths(&cwd));
     }
-    match fs::read_to_string(path) {
-        Ok(s) => match toml::from_str::<Config>(&s) {
-            Ok(c) => c,
-            Err(_) => Config::default(),
-        },
-        Err(_) => Config::default(),
+
+    if let Ok(exe) = env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            paths.extend(ancestor_config_paths(dir));
+        }
     }
+
+    if let Ok(xdg_config) = env::var("XDG_CONFIG_HOME") {
+        paths.push(PathBuf::from(xdg_config).join("aura/aura.toml"));
+    }
+
+    if let Ok(home) = env::var("HOME") {
+        paths.push(PathBuf::from(home).join(".config/aura/aura.toml"));
+    }
+
+    paths
+}
+
+fn ancestor_config_paths(start: &std::path::Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let mut current = start.to_path_buf();
+    loop {
+        paths.push(current.join("config/aura.toml"));
+        if !current.pop() {
+            break;
+        }
+    }
+    paths
+}
+
+/// Load configuration from a file if present and validate required keys.
+pub fn load_config() -> anyhow::Result<Config> {
+    let mut builder = config::Config::builder();
+    for path in config_file_paths() {
+        builder = builder.add_source(File::from(path).required(false));
+    }
+
+    let config = builder.build()
+        .and_then(|cfg| cfg.try_deserialize::<Config>())?;
+
+    config.validate()?;
+    Ok(config)
 }

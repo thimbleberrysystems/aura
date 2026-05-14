@@ -1,3 +1,4 @@
+use anyhow::Context;
 use std::io::Result as IoResult;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -23,8 +24,8 @@ async fn handle_config_show<W>(cfg: &crate::cfg::Config, w: &mut W) -> IoResult<
 where
     W: tokio::io::AsyncWrite + Unpin + Send,
 {
-    let (logging_effective, logging_src) = cfg.logging_with_source();
-    let model_effective = cfg.model_name();
+    let (logging_effective, logging_src) = cfg.logging_enabled_with_source();
+    let model_effective = cfg.model_name().unwrap_or_else(|| "(not set)".to_string());
     let model_endpoint = cfg.model_endpoint().unwrap_or_else(|| "(not set)".to_string());
     let model_api_key = cfg.model_api_key().map(|_| "(set)".to_string()).unwrap_or_else(|| "(not set)".to_string());
     let (disable_summary_effective, disable_summary_src) = cfg.disable_summary_with_source();
@@ -33,21 +34,20 @@ where
     let (control_tcp_effective, control_tcp_src) = cfg.control_tcp_with_source();
 
     let src_name = |s: crate::cfg::Source| match s {
-        crate::cfg::Source::Env => "env",
         crate::cfg::Source::Config => "config file",
-        crate::cfg::Source::Default => "default",
+        crate::cfg::Source::Missing => "missing",
     };
 
     let mut out = String::new();
-    out.push_str(&format!("logging: {} ({})\n", logging_effective, src_name(logging_src)));
-    out.push_str(&format!("model_name: {} (AURA_MODEL_NAME)\n", model_effective));
+    out.push_str(&format!("logging: {} ({})\n", logging_effective.unwrap_or(false), src_name(logging_src)));
+    out.push_str(&format!("model_name: {}\n", model_effective));
     out.push_str(&format!("model_endpoint: {}\n", model_endpoint));
     out.push_str(&format!("model_api_key: {}\n", model_api_key));
-    out.push_str(&format!("disable_summary: {} ({})\n", disable_summary_effective, src_name(disable_summary_src)));
-    out.push_str(&format!("summarize_threshold: {} ({})\n", summarize_threshold_effective, src_name(summarize_threshold_src)));
-    out.push_str(&format!("summarize_timeout_secs: {} ({})\n", summarize_timeout_effective, src_name(summarize_timeout_src)));
-    out.push_str(&format!("compress_prompt: {} (AURA_COMPRESS_PROMPT)\n", cfg.compress_prompt()));
-    out.push_str(&format!("control_tcp: {} ({})\n", control_tcp_effective, src_name(control_tcp_src)));
+    out.push_str(&format!("disable_summary: {} ({})\n", disable_summary_effective.unwrap_or(false), src_name(disable_summary_src)));
+    out.push_str(&format!("summarize_threshold: {} ({})\n", summarize_threshold_effective.unwrap_or(250), src_name(summarize_threshold_src)));
+    out.push_str(&format!("summarize_timeout_secs: {} ({})\n", summarize_timeout_effective.unwrap_or(3000), src_name(summarize_timeout_src)));
+    out.push_str(&format!("compress_prompt: {}\n", cfg.compress_prompt().unwrap_or_else(|| "(not set)".to_string())));
+    out.push_str(&format!("control_tcp: {} ({})\n", control_tcp_effective.unwrap_or_else(|| "(not set)".to_string()), src_name(control_tcp_src)));
 
     if let Err(e) = w.write_all(out.as_bytes()).await {
         tracing::error!("tcp write error: {}", e);
@@ -82,7 +82,13 @@ where
     let cmdline = line.trim_end_matches(&['\r', '\n'][..]).to_string();
     tracing::debug!("control: received command='{}'", cmdline);
 
-    let cfg = crate::cfg::load_config();
+    let cfg = match crate::cfg::load_config() {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            tracing::error!("config load failed: {}", e);
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, "failed to load configuration"));
+        }
+    };
     match parse_command(&cmdline) {
         CmdAction::ConfigShow => {
             if let Err(e) = handle_config_show(&cfg, &mut w).await {
@@ -107,8 +113,8 @@ where
 
 async fn run_control_server() -> anyhow::Result<()> {
     // Start TCP loopback listener (portable fallback for Windows)
-    let cfg_for_server = crate::cfg::load_config();
-    let (tcp_addr, _tcp_src) = cfg_for_server.control_tcp_with_source();
+    let cfg_for_server = crate::cfg::load_config().context("failed to load configuration for control server")?;
+    let tcp_addr = cfg_for_server.control_tcp().context("server.control_tcp is missing in config file")?;
     let tcp_listener = TcpListener::bind(&tcp_addr).await?;
     tracing::info!("control: tcp listening on {}", tcp_addr);
 

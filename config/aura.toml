@@ -1,0 +1,24 @@
+# Aura hierarchical configuration
+# The app loads values from this TOML file.
+
+[logging]
+enabled = false
+
+[summary]
+disable = false
+threshold = 250
+timeout_secs = 3000
+
+[compress]
+prompt = """Act as a terminal log compressor. Convert the output into a concise technical brief. Keep: Commands, exit codes, error lines, and unique errors. Discard: Everything else.
+Command: {cmd}
+<BEGIN_OUTPUT>
+{clean_output}
+<END_OUTPUT>"""
+
+[server]
+control_tcp = "127.0.0.1:40001"
+
+[model]
+name = "qwen2.5-coder:1.5b"
+addr = "127.0.0.1:11434"

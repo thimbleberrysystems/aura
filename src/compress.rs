@@ -54,9 +54,9 @@ async fn semantic_compress(
     display_tx: mpsc::Sender<Vec<u8>>,
     clean: String,
 ) {
-    let threshold = config.summarize_threshold_with_source().0;
-    let disabled = config.disable_summary_with_source().0;
-    let timeout = Duration::from_secs(config.summarize_timeout_secs_with_source().0);
+    let threshold = config.summarize_threshold_with_source().0.unwrap_or(250);
+    let disabled = config.disable_summary_with_source().0.unwrap_or(false);
+    let timeout = Duration::from_secs(config.summarize_timeout_secs_with_source().0.unwrap_or(3000));
 
     if disabled || clean.len() < threshold {
         // Short output or summaries disabled — display as-is.
@@ -70,11 +70,11 @@ async fn semantic_compress(
     }
 
     let model_cfg = ModelConfig {
-        name: config.model_name(),
+        name: config.model_name().expect("model_name is missing in config"),
         endpoint: config.model_endpoint(),
         api_key: config.model_api_key(),
     };
-    let prompt_template = config.compress_prompt();
+    let prompt_template = config.compress_prompt().expect("compress_prompt is missing in config");
 
     let stream_result = tokio::time::timeout(
         timeout,

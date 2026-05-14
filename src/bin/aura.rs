@@ -45,9 +45,9 @@ fn configure_prompt_env(builder: &mut CommandBuilder, shell_path: &str) {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let config = load_config();
+    let config = load_config().context("failed to load configuration")?;
 
-    let env_filter = if config.logging_with_source().0 {
+    let env_filter = if config.logging_enabled_with_source().0.unwrap_or(false) {
         tracing_subscriber::EnvFilter::from_default_env()
     } else {
         tracing_subscriber::EnvFilter::new("warn")
