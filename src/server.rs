@@ -28,8 +28,7 @@ where
 {
     let (logging_effective, logging_src) = cfg.logging_enabled_with_source();
     let model_effective = cfg.model_name().unwrap_or_else(|| "(not set)".to_string());
-    let model_endpoint = cfg.model_endpoint().unwrap_or_else(|| "(not set)".to_string());
-    let model_api_key = cfg.model_api_key().map(|_| "(set)".to_string()).unwrap_or_else(|| "(not set)".to_string());
+    let model_base_url = cfg.model_base_url().unwrap_or_else(|| "(default: http://127.0.0.1:11434)".to_string());
     let (disable_summary_effective, disable_summary_src) = cfg.disable_summary_with_source();
     let (summarize_threshold_effective, summarize_threshold_src) = cfg.summarize_threshold_with_source();
     let (summarize_timeout_effective, summarize_timeout_src) = cfg.summarize_timeout_secs_with_source();
@@ -43,8 +42,7 @@ where
     let mut out = String::new();
     out.push_str(&format!("logging: {} ({})\n", logging_effective.unwrap_or(false), src_name(logging_src)));
     out.push_str(&format!("model_name: {}\n", model_effective));
-    out.push_str(&format!("model_endpoint: {}\n", model_endpoint));
-    out.push_str(&format!("model_api_key: {}\n", model_api_key));
+    out.push_str(&format!("model_base_url: {}\n", model_base_url));
     out.push_str(&format!("disable_summary: {} ({})\n", disable_summary_effective.unwrap_or(false), src_name(disable_summary_src)));
     out.push_str(&format!("summarize_threshold: {} ({})\n", summarize_threshold_effective.unwrap_or(250), src_name(summarize_threshold_src)));
     out.push_str(&format!("summarize_timeout_secs: {} ({})\n", summarize_timeout_effective.unwrap_or(3000), src_name(summarize_timeout_src)));

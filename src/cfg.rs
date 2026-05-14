@@ -39,8 +39,6 @@ pub struct ServerConfig {
 pub struct ModelConfig {
     pub name: Option<String>,
     pub addr: Option<String>,
-    pub endpoint: Option<String>,
-    pub api_key: Option<String>,
 }
 
 /// Where a configuration value came from.
@@ -131,14 +129,9 @@ impl Config {
         self.model.as_ref().and_then(|m| m.name.clone())
     }
 
-    /// Model endpoint URL.
-    pub fn model_endpoint(&self) -> Option<String> {
-        self.model.as_ref().and_then(|m| m.endpoint.clone())
-    }
-
-    /// Model API key.
-    pub fn model_api_key(&self) -> Option<String> {
-        self.model.as_ref().and_then(|m| m.api_key.clone())
+    /// Model base URL for Ollama (derived from addr, e.g. "http://127.0.0.1:11434").
+    pub fn model_base_url(&self) -> Option<String> {
+        self.model_addr().map(|addr| format!("http://{}", addr))
     }
 
     /// Validate that all required config values are present.
@@ -157,8 +150,6 @@ impl Config {
             .context("server.control_tcp is missing in config")?;
         self.model_name()
             .context("model.name is missing in config")?;
-        self.model_addr()
-            .context("model.addr is missing in config")?;
         Ok(())
     }
 }

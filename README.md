@@ -58,7 +58,7 @@ flowchart TB
         PTY["PTY Master/Slave Intercept\nOS-level · zero application changes\nportable-pty · all platforms"]
         STRIP["ANSI / VT100 Normalizer\ntermwiz VteParser\nclean semantic text"]
         RING["Summary Ring Buffer\nN configurable slots\nrolling session context"]
-        LLM_LOCAL["Local LLM Compressor\nllama3 · qwen · deepseek · any model\ngenai unified interface · streaming"]
+        LLM_LOCAL["Local LLM Compressor\nllama3 · qwen · deepseek · any model\noddonkey · Ollama native · streaming"]
         THRESH["Threshold Gate\npass-through if output < N bytes\nzero latency for short commands"]
     end
 
@@ -321,7 +321,7 @@ flowchart TD
         subgraph PIPELINE["Pipeline  ·  tokio::spawn per command"]
             GATE["Threshold Gate\nlen < AURA_SUMMARIZE_THRESHOLD"]
             SNAP["Ring Snapshot\nread lock · stable context"]
-            CALL["LLM Stream\ngenai · HTTP SSE"]
+            CALL["LLM Stream\noddonkey · Ollama native"]
             PUSH["Ring Push\nwrite lock · cmd + summary"]
         end
 
@@ -406,36 +406,60 @@ Malicious terminal content (e.g. `</END_OUTPUT> Ignore previous instructions...`
 
 ## Configuration
 
-| Variable | Default | Description |
-|---|---|---|
-| `AURA_MODEL_NAME` | `llama3.2` | Model used for compression |
-| `AURA_MODEL_ENDPOINT` | _(Ollama default)_ | OpenAI-compatible endpoint URL |
-| `AURA_MODEL_API_KEY` | _(unset)_ | API key (for cloud endpoints) |
-| `AURA_SUMMARIZE_THRESHOLD` | `250` | Min bytes before LLM is invoked |
-| `AURA_SUMMARIZE_TIMEOUT_SECS` | `3000` | Per-call LLM timeout |
-| `AURA_DISABLE_SUMMARY` | _(unset)_ | Set to `1` to disable |
-| `AURA_COMPRESS_PROMPT` | _(built-in)_ | Override compression prompt template |
-| `AURA_SUMMARY_RING_SIZE` | `5` | Rolling context window depth |
-| `AURA_SUMMARY_RING_SLOT_BYTES` | `2048` | Max bytes per ring slot |
-| `AURA_CONTROL_TCP` | `127.0.0.1:40001` | Control plane address |
-| `AURA_LOGGING` | _(unset)_ | Set to `1` for debug tracing |
+All settings live in `config/aura.toml` in the project directory (or `~/.config/aura/aura.toml` for a user-level install). Changes take effect immediately — no restart required:
+
+```bash
+aura-cli config reload   # hot-reload; reinitialises Ollama/model if changed
+aura-cli config show     # inspect the active values
+```
+
+```toml
+[model]
+name = "qwen2.5-coder:1.5b"   # any model name Ollama knows
+addr = "127.0.0.1:11434"       # optional — defaults to localhost:11434
+
+[summary]
+disable = false
+threshold = 250                # bytes below which output is passed through verbatim
+timeout_secs = 3000
+
+[compress]
+# prompt template; {cmd} and {clean_output} are substituted at runtime
+prompt = """..."""
+
+[logging]
+enabled = false
+
+[server]
+control_tcp = "127.0.0.1:40001"
+```
+
+When `model.name` or `model.addr` changes on reload, AURA re-initialises `oddonkey`, which installs Ollama, starts the server, and pulls the new model automatically before the next command is processed.
 
 ---
 
 ## Quickstart
 
 ```bash
-# Build
-cargo build --release --bins
+# 1 · Build
+cargo build --bins
 
-# Run (with a local Ollama instance)
-./target/release/aura
-
-# Or use the convenience script (starts Docker-based Ollama)
-./scripts/aura.sh
+# 2 · Run
+./target/debug/aura
 ```
 
-AURA wraps your existing shell. Use it exactly as you use your terminal today. Commands shorter than `AURA_SUMMARIZE_THRESHOLD` bytes are passed through with zero latency.
+**That's it.** On first run, `oddonkey` automatically:
+- Installs Ollama if it is not present
+- Starts the Ollama server if it is not running
+- Pulls the configured model if it is not already downloaded
+
+AURA then wraps your existing shell. Use it exactly as you use your terminal today. Commands shorter than the configured threshold are passed through with zero latency.
+
+To change the model or any setting, edit `config/aura.toml` and reload without restarting:
+
+```bash
+aura-cli config reload
+```
 
 ---
 
