@@ -3,6 +3,7 @@ use crossterm::terminal::enable_raw_mode;
 use libc;
 use portable_pty::{native_pty_system, CommandBuilder};
 use std::env;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio::io::AsyncWriteExt;
 use tokio::signal::unix::{signal, SignalKind};
@@ -12,6 +13,35 @@ use aura::cfg::load_config;
 use aura::compress::pipeline_task;
 use aura::pty::{CapturedCommand, RawGuard, capture_task, current_pty_size};
 use aura::server as cli_server;
+
+fn shell_basename(shell_path: &str) -> &str {
+    Path::new(shell_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(shell_path)
+}
+
+fn configure_prompt_env(builder: &mut CommandBuilder, shell_path: &str) {
+    let shell_name = shell_basename(shell_path);
+
+    match shell_name {
+        "bash" => {
+            builder.env("PROMPT_COMMAND", r#"PS1='aura:\w\$ '"#);
+            builder.env("PS1", r#"aura:\w\$ "#);
+        }
+        "zsh" => {
+            builder.env("PROMPT", r#"aura:%~%# "#);
+            builder.env("PS1", r#"aura:%~%# "#);
+        }
+        "fish" => {
+            builder.arg("--init-command");
+            builder.arg(r#"function fish_prompt; echo -n 'aura:'(prompt_pwd)'$ '; end"#);
+        }
+        _ => {
+            builder.env("PS1", r#"aura:\w\$ "#);
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -38,7 +68,8 @@ async fn main() -> anyhow::Result<()> {
     let master = Arc::new(Mutex::new(pty_pair.master));
 
     let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-    let cmd = CommandBuilder::new(&shell);
+    let mut cmd = CommandBuilder::new(&shell);
+    configure_prompt_env(&mut cmd, &shell);
     let mut child = {
         let _m = master.lock().unwrap();
         pty_pair.slave.spawn_command(cmd).context("spawn_command failed")?
