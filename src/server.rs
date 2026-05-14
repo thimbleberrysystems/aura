@@ -7,6 +7,7 @@ use tokio::net::TcpListener;
 /// Parsed command actions from a single-line control command.
 enum CmdAction {
     ConfigShow,
+    ConfigReload,
     Unknown(String),
 }
 
@@ -15,6 +16,7 @@ fn parse_command(line: &str) -> CmdAction {
     let s = line.trim();
     match s {
         "config show" | "config" => CmdAction::ConfigShow,
+        "config reload" => CmdAction::ConfigReload,
         _ => CmdAction::Unknown(s.to_string()),
     }
 }
@@ -56,6 +58,29 @@ where
     Ok(())
 }
 
+async fn handle_config_reload<W>(config_tx: &tokio::sync::watch::Sender<crate::cfg::Config>, w: &mut W) -> IoResult<()>
+where
+    W: tokio::io::AsyncWrite + Unpin + Send,
+{
+    match crate::cfg::load_config() {
+        Ok(cfg) => {
+            if config_tx.send(cfg).is_err() {
+                let msg = "Failed to reload configuration: pipeline task is gone\n";
+                let _ = w.write_all(msg.as_bytes()).await;
+                return Err(std::io::Error::new(std::io::ErrorKind::Other, msg));
+            }
+            let msg = "config reloaded\n";
+            let _ = w.write_all(msg.as_bytes()).await;
+            Ok(())
+        }
+        Err(e) => {
+            let msg = format!("config reload failed: {}\n", e);
+            let _ = w.write_all(msg.as_bytes()).await;
+            Err(std::io::Error::new(std::io::ErrorKind::Other, msg))
+        }
+    }
+}
+
 async fn handle_unknown<W>(u: &str, w: &mut W) -> IoResult<()>
 where
     W: tokio::io::AsyncWrite + Unpin + Send,
@@ -68,7 +93,7 @@ where
     Ok(())
 }
 
-async fn handle_stream<S>(stream: S) -> IoResult<()>
+async fn handle_stream<S>(stream: S, config_tx: tokio::sync::watch::Sender<crate::cfg::Config>) -> IoResult<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
@@ -96,6 +121,12 @@ where
                 return Err(e);
             }
         }
+        CmdAction::ConfigReload => {
+            if let Err(e) = handle_config_reload(&config_tx, &mut w).await {
+                tracing::error!("process command error: {}", e);
+                return Err(e);
+            }
+        }
         CmdAction::Unknown(u) => {
             if let Err(e) = handle_unknown(&u, &mut w).await {
                 tracing::error!("process command error: {}", e);
@@ -111,7 +142,7 @@ where
     Ok(())
 }
 
-async fn run_control_server() -> anyhow::Result<()> {
+async fn run_control_server(config_tx: tokio::sync::watch::Sender<crate::cfg::Config>) -> anyhow::Result<()> {
     // Start TCP loopback listener (portable fallback for Windows)
     let cfg_for_server = crate::cfg::load_config().context("failed to load configuration for control server")?;
     let tcp_addr = cfg_for_server.control_tcp().context("server.control_tcp is missing in config file")?;
@@ -122,8 +153,9 @@ async fn run_control_server() -> anyhow::Result<()> {
     loop {
         match tcp_listener.accept().await {
             Ok((stream, _peer)) => {
+                let tx = config_tx.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_stream(stream).await {
+                    if let Err(e) = handle_stream(stream, tx).await {
                         tracing::error!("tcp conn error: {}", e);
                     }
                 });
@@ -141,9 +173,9 @@ async fn run_control_server() -> anyhow::Result<()> {
 /// Start the control server in the background. This spawns listeners for TCP
 /// (loopback) and, on Unix, a Unix-domain socket. Each accepted connection is
 /// handled by reading a single command line and writing a single-line reply.
-pub fn start_control_server() {
+pub fn start_control_server(config_tx: tokio::sync::watch::Sender<crate::cfg::Config>) {
     tokio::spawn(async move {
-        if let Err(e) = run_control_server().await {
+        if let Err(e) = run_control_server(config_tx).await {
             tracing::error!("control server failed: {}", e);
         }
     });

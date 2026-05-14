@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio::io::AsyncWriteExt;
 use tokio::signal::unix::{signal, SignalKind};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tracing::{error, info, warn};
 use aura::cfg::load_config;
 use aura::compress::pipeline_task;
@@ -46,6 +46,7 @@ fn configure_prompt_env(builder: &mut CommandBuilder, shell_path: &str) {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = load_config().context("failed to load configuration")?;
+    let (config_tx, config_rx) = watch::channel(config.clone());
 
     let env_filter = if config.logging_enabled_with_source().0.unwrap_or(false) {
         tracing_subscriber::EnvFilter::from_default_env()
@@ -97,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
     let (cmd_tx, cmd_rx) = mpsc::channel::<CapturedCommand>(16);
 
     // ── Control server ────────────────────────────────────────────────────────
-    cli_server::start_control_server();
+    cli_server::start_control_server(config_tx.clone());
 
     // ── SIGWINCH: resize PTY ──────────────────────────────────────────────────
     let master_resize = Arc::clone(&master);
@@ -123,7 +124,7 @@ async fn main() -> anyhow::Result<()> {
     ));
 
     // ── Stage 2: summarize ────────────────────────────────────────────────────
-    tokio::spawn(pipeline_task(config, cmd_rx, display_tx));
+    tokio::spawn(pipeline_task(config_rx, cmd_rx, display_tx));
 
     // ── Stage 3: display ──────────────────────────────────────────────────────
     tokio::spawn(async move {

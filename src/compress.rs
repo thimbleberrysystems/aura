@@ -4,7 +4,7 @@ use genai::Client;
 use genai::ServiceTarget;
 use genai::chat::{ChatRequest, ChatStream, ChatStreamEvent};
 use genai::resolver::{AuthData, ServiceTargetResolver};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use crate::cfg::Config;
 use crate::pty::{CapturedCommand, strip_ansi};
 
@@ -32,12 +32,12 @@ fn build_client(cfg: ModelConfig) -> Client {
 ///
 /// One tokio task is spawned per command so commands are processed concurrently.
 pub async fn pipeline_task(
-    config: Config,
+    config_rx: watch::Receiver<Config>,
     mut rx: mpsc::Receiver<CapturedCommand>,
     display_tx: mpsc::Sender<Vec<u8>>,
 ) {
     while let Some(cap) = rx.recv().await {
-        let config = config.clone();
+        let config = config_rx.borrow().clone();
         let tx = display_tx.clone();
         tokio::spawn(async move { process_pipeline(config, cap, tx).await; });
     }
